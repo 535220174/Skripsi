@@ -1,0 +1,30 @@
+{
+    "dataset": "data_layanan_penumpang_bus_tj_halte_pulo_gadung.xlsx",
+    "jumlah_baris_awal": 188,
+    "duplikat_dihapus": 0,
+    "baris_tidak_valid_dihapus": 0,
+    "baris_valid": 188,
+    "jumlah_data_rush_hour": 177,
+    "jumlah_tanggal_unik": 5,
+    "jumlah_data_latih": 141,
+    "jumlah_data_uji": 36,
+    "MAE": 7.4510991838243275,
+    "MSE": 89.13275310038989,
+    "RMSE": 9.441014410559381,
+    "R2": 0.3149489514060554,
+    "evaluasi_tersedia": true,
+    "metode_evaluasi": "train_test_split 80:20, random_state=42",
+    "metode_penyeimbangan": "Adaptasi SMOTE untuk regresi kontinu; hanya pada data latih",
+    "sampel_sintetis_smote_regression": 21,
+    "jumlah_data_latih_setelah_smote": 162,
+    "fitur": [
+        "Waktu Menit",
+        "Hari dalam minggu",
+        "Hari dalam bulan",
+        "Bulan",
+        "Rute__Koridor 2",
+        "Rute__Rute 2A"
+    ],
+    "target": "Jumlah Penumpang",
+    "catatan": "Model memakai waktu, hari dalam minggu, hari dalam bulan, bulan, dan rute sebagai fitur. Karena data hanya mencakup lima tanggal, hasil evaluasi dan prediksi untuk tanggal baru harus ditafsirkan secara hati-hati."
+}
