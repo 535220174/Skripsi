@@ -5,7 +5,8 @@ import joblib
 import numpy as np
 import pandas as pd
 from xgboost import XGBRegressor
-from sklearn.model_selection import train_test_split
+from sklearn.base import BaseEstimator, RegressorMixin
+from sklearn.model_selection import train_test_split, GridSearchCV, KFold
 from sklearn.metrics import (
     mean_absolute_error,
     mean_squared_error,
@@ -257,17 +258,24 @@ def build_features(df, route_categories):
     return work.reindex(columns=feature_columns, fill_value=0).astype(float), feature_columns
 
 
-def create_model():
+def create_model(params=None):
+    """Membuat model XGBoost dengan parameter default atau hasil tuning."""
+    model_params = {
+        "n_estimators": 100,
+        "max_depth": 2,
+        "learning_rate": 0.05,
+        "subsample": 0.9,
+        "colsample_bytree": 1.0,
+        "reg_lambda": 1.0,
+    }
+    if params:
+        model_params.update(params)
+
     return XGBRegressor(
         objective="reg:squarederror",
-        n_estimators=100,
-        max_depth=2,
-        learning_rate=0.05,
-        subsample=0.9,
-        colsample_bytree=1.0,
-        reg_lambda=1.0,
         random_state=42,
         n_jobs=1,
+        **model_params,
     )
 
 
@@ -345,6 +353,53 @@ def smote_regression(X_train, y_train, random_state=42):
     return pd.DataFrame(X_aug, columns=X_train.columns), pd.Series(y_aug), len(synthetic_y)
 
 
+class SmoteXGBRegressor(RegressorMixin, BaseEstimator):
+    """
+    Estimator XGBoost yang menerapkan adaptasi SMOTE Regression hanya
+    pada data yang diterima oleh fit(). Saat dipakai GridSearchCV,
+    data tersebut adalah bagian pelatihan dari masing-masing fold.
+    """
+
+    def __init__(
+        self,
+        n_estimators=100,
+        max_depth=2,
+        learning_rate=0.05,
+        subsample=0.9,
+        colsample_bytree=1.0,
+        reg_lambda=1.0,
+    ):
+        self.n_estimators = n_estimators
+        self.max_depth = max_depth
+        self.learning_rate = learning_rate
+        self.subsample = subsample
+        self.colsample_bytree = colsample_bytree
+        self.reg_lambda = reg_lambda
+
+    def fit(self, X, y):
+        X_resampled, y_resampled, synthetic_count = smote_regression(
+            X, y, random_state=42
+        )
+        self.synthetic_count_ = int(synthetic_count)
+
+        self.model_ = XGBRegressor(
+            objective="reg:squarederror",
+            n_estimators=self.n_estimators,
+            max_depth=self.max_depth,
+            learning_rate=self.learning_rate,
+            subsample=self.subsample,
+            colsample_bytree=self.colsample_bytree,
+            reg_lambda=self.reg_lambda,
+            random_state=42,
+            n_jobs=1,
+        )
+        self.model_.fit(X_resampled, y_resampled)
+        return self
+
+    def predict(self, X):
+        return self.model_.predict(X)
+
+
 # ============================================================
 # TRAINING DAN EVALUASI
 # ============================================================
@@ -402,34 +457,93 @@ def main():
         random_state=42,
     )
 
-    # SMOTE adaptasi regresi hanya diterapkan pada data training.
-    # X_test dan y_test tetap data asli untuk evaluasi yang adil.
+    # ========================================================
+    # MODEL AWAL (SEBELUM TUNING)
+    # ========================================================
+    # Model awal memakai konfigurasi hyperparameter yang sudah ada.
+    # SMOTE Regression hanya diterapkan pada data pelatihan 80%.
     X_train_smote, y_train_smote, synthetic_count = smote_regression(
         X_train, y_train, random_state=42
     )
-    print(f"Sampel sintetis SMOTE-regression: {synthetic_count}")
-    print(f"Data latih sebelum SMOTE       : {len(X_train)}")
-    print(f"Data latih setelah SMOTE       : {len(X_train_smote)}")
+    print(f"Sampel sintetis SMOTE-regression (training): {synthetic_count}")
+    print(f"Data latih sebelum SMOTE               : {len(X_train)}")
+    print(f"Data latih setelah SMOTE               : {len(X_train_smote)}")
 
-    evaluation_model = create_model()
-    evaluation_model.fit(X_train_smote, y_train_smote)
+    baseline_model = create_model()
+    baseline_model.fit(X_train_smote, y_train_smote)
 
-    y_pred = np.maximum(
-        evaluation_model.predict(X_test),
+    y_pred_before = np.maximum(
+        baseline_model.predict(X_test),
         0,
     )
 
-    mae = mean_absolute_error(y_test, y_pred)
-    mse = mean_squared_error(y_test, y_pred)
-    rmse = float(np.sqrt(mse))
+    metrics_before = {
+        "MAE": float(mean_absolute_error(y_test, y_pred_before)),
+        "MSE": float(mean_squared_error(y_test, y_pred_before)),
+        "RMSE": float(np.sqrt(mean_squared_error(y_test, y_pred_before))),
+        "R2": (
+            float(r2_score(y_test, y_pred_before))
+            if len(y_test) >= 2 else None
+        ),
+    }
 
-    # R2 dapat bernilai negatif; itu tidak otomatis berarti error kode.
-    r2 = (
-        float(r2_score(y_test, y_pred))
-        if len(y_test) >= 2
-        else None
+    # ========================================================
+    # GRIDSEARCHCV: 3-FOLD K-FOLD ACAK
+    # ========================================================
+    # Penting: SMOTE Regression berada di dalam fit() estimator.
+    # Dengan demikian, pada setiap fold SMOTE hanya diterapkan pada
+    # bagian training fold. Bagian validasi fold tetap data asli.
+    parameter_grid = {
+        "n_estimators": [100, 200],
+        "max_depth": [2, 3],
+        "learning_rate": [0.03, 0.05],
+        "subsample": [0.8, 1.0],
+        "colsample_bytree": [0.8, 1.0],
+    }
+
+    cross_validation = KFold(
+        n_splits=3,
+        shuffle=True,
+        random_state=42,
     )
 
+    grid_search = GridSearchCV(
+        estimator=SmoteXGBRegressor(),
+        param_grid=parameter_grid,
+        scoring="neg_mean_absolute_error",
+        cv=cross_validation,
+        refit=True,
+        n_jobs=1,
+        verbose=1,
+        error_score="raise",
+        return_train_score=True,
+    )
+
+    print("\nMemulai GridSearchCV dengan 3-Fold Cross-Validation...")
+    grid_search.fit(X_train, y_train)
+
+    best_params = grid_search.best_params_
+    tuned_model = grid_search.best_estimator_
+
+    # Test set 20% hanya digunakan setelah parameter terbaik ditemukan.
+    # Test set tidak masuk ke proses GridSearchCV maupun SMOTE.
+    y_pred_after = np.maximum(
+        tuned_model.predict(X_test),
+        0,
+    )
+
+    metrics_after = {
+        "MAE": float(mean_absolute_error(y_test, y_pred_after)),
+        "MSE": float(mean_squared_error(y_test, y_pred_after)),
+        "RMSE": float(np.sqrt(mean_squared_error(y_test, y_pred_after))),
+        "R2": (
+            float(r2_score(y_test, y_pred_after))
+            if len(y_test) >= 2 else None
+        ),
+    }
+
+    # Metrik utama tetap menunjuk ke model setelah tuning agar kompatibel
+    # dengan aplikasi yang membaca MAE/MSE/RMSE/R2 pada tingkat teratas.
     metrics = {
         "dataset": data_path.name,
         "jumlah_baris_awal": int(len(df)),
@@ -440,32 +554,74 @@ def main():
         "jumlah_tanggal_unik": int(rush["Tanggal"].nunique()),
         "jumlah_data_latih": int(len(X_train)),
         "jumlah_data_uji": int(len(X_test)),
-        "MAE": float(mae),
-        "MSE": float(mse),
-        "RMSE": float(rmse),
-        "R2": r2,
+        "MAE": metrics_after["MAE"],
+        "MSE": metrics_after["MSE"],
+        "RMSE": metrics_after["RMSE"],
+        "R2": metrics_after["R2"],
         "evaluasi_tersedia": True,
         "metode_evaluasi": "train_test_split 80:20, random_state=42",
-        "metode_penyeimbangan": "Adaptasi SMOTE untuk regresi kontinu; hanya pada data latih",
-        "sampel_sintetis_smote_regression": int(synthetic_count),
+        "metode_tuning": "GridSearchCV dengan 3-Fold KFold acak",
+        "scoring_tuning": "neg_mean_absolute_error",
+        "jumlah_kombinasi_parameter": int(len(grid_search.cv_results_["params"])),
+        "jumlah_fit_cross_validation": int(
+            len(grid_search.cv_results_["params"]) * 3
+        ),
+        "best_params": {
+            key: (float(value) if isinstance(value, np.floating) else int(value)
+                  if isinstance(value, np.integer) else value)
+            for key, value in best_params.items()
+        },
+        "best_cv_mae": float(-grid_search.best_score_),
+        "hasil_sebelum_tuning": metrics_before,
+        "hasil_sesudah_tuning": metrics_after,
+        "metode_penyeimbangan": (
+            "Adaptasi SMOTE untuk regresi kontinu; hanya pada bagian "
+            "pelatihan, termasuk pelatihan di setiap fold"
+        ),
+        "sampel_sintetis_smote_regression_data_latih_penuh": int(synthetic_count),
         "jumlah_data_latih_setelah_smote": int(len(X_train_smote)),
         "fitur": FEATURE_COLUMNS,
         "target": TARGET_COLUMN,
         "catatan": (
-            "Model memakai waktu, hari dalam minggu, hari dalam bulan, bulan, "
-            "dan rute sebagai fitur. Karena data hanya mencakup lima tanggal, "
-            "hasil evaluasi dan prediksi untuk tanggal baru harus ditafsirkan "
-            "secara hati-hati."
+            "Data uji 20% tidak digunakan dalam GridSearchCV atau SMOTE. "
+            "GridSearchCV menggunakan KFold acak 3-fold pada data latih 80%. "
+            "Karena data hanya mencakup lima tanggal, hasil evaluasi dan "
+            "prediksi untuk tanggal baru harus ditafsirkan secara hati-hati."
         ),
     }
 
-    # Model final dilatih menggunakan seluruh data rush hour yang telah
-    # diproses dengan adaptasi SMOTE-regression. Model evaluasi di atas
-    # tetap diuji pada X_test/y_test asli.
+    # Simpan seluruh hasil pencarian agar kombinasi parameter dapat
+    # diperiksa dan didokumentasikan pada lampiran skripsi.
+    tuning_results = pd.DataFrame(grid_search.cv_results_)
+    tuning_results = tuning_results.sort_values(
+        by="rank_test_score"
+    ).reset_index(drop=True)
+    tuning_results.to_csv(
+        MODEL_DIR / "grid_search_results.csv",
+        index=False,
+    )
+
+    save_json(
+        MODEL_DIR / "tuning_summary.json",
+        {
+            "method": "GridSearchCV",
+            "cv": "KFold(n_splits=3, shuffle=True, random_state=42)",
+            "scoring": "neg_mean_absolute_error",
+            "parameter_grid": parameter_grid,
+            "best_params": metrics["best_params"],
+            "best_cv_mae": float(-grid_search.best_score_),
+            "combinations_tested": int(len(grid_search.cv_results_["params"])),
+            "fit_count": int(len(grid_search.cv_results_["params"]) * 3),
+        },
+    )
+
+    # Model produksi dilatih ulang menggunakan seluruh data rush hour
+    # setelah parameter terbaik ditentukan. Evaluasi test set di atas
+    # tetap berasal dari model tuned yang hanya dilatih pada train set.
     X_final_smote, y_final_smote, final_synthetic_count = smote_regression(
         X, y, random_state=42
     )
-    final_model = create_model()
+    final_model = create_model(best_params)
     final_model.fit(X_final_smote, y_final_smote)
     final_model.save_model(str(MODEL_PATH))
 
@@ -481,6 +637,8 @@ def main():
         "training_data": data_path.name,
         "training_rows": int(len(rush)),
         "final_synthetic_rows": int(final_synthetic_count),
+        "best_params": metrics["best_params"],
+        "tuning_method": "GridSearchCV dengan 3-Fold KFold acak",
         "smote_method": "Adaptasi SMOTE untuk regresi kontinu; interpolasi sampel pada rentang target jarang",
         "training_dates": sorted(
             rush["Tanggal"].dt.strftime("%Y-%m-%d").unique().tolist()
@@ -506,11 +664,18 @@ def main():
         },
     )
 
-    print("\nHASIL EVALUASI")
-    print(f"MAE  : {mae:.4f}")
-    print(f"MSE  : {mse:.4f}")
-    print(f"RMSE : {rmse:.4f}")
-    print(f"R2   : {r2 if r2 is not None else 'Tidak tersedia'}")
+    print("\nHASIL EVALUASI DATA UJI 20%")
+    print("Sebelum tuning:")
+    print(f"MAE  : {metrics_before['MAE']:.4f}")
+    print(f"MSE  : {metrics_before['MSE']:.4f}")
+    print(f"RMSE : {metrics_before['RMSE']:.4f}")
+    print(f"R2   : {metrics_before['R2'] if metrics_before['R2'] is not None else 'Tidak tersedia'}")
+    print("\nSesudah tuning:")
+    print(f"MAE  : {metrics_after['MAE']:.4f}")
+    print(f"MSE  : {metrics_after['MSE']:.4f}")
+    print(f"RMSE : {metrics_after['RMSE']:.4f}")
+    print(f"R2   : {metrics_after['R2'] if metrics_after['R2'] is not None else 'Tidak tersedia'}")
+    print(f"Best parameters: {best_params}")
 
     print("\n" + "=" * 65)
     print("TRAINING SELESAI")

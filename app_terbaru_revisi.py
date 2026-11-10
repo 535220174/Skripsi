@@ -1570,7 +1570,7 @@ elif page == "Rekomendasi Layanan":
 
 elif page == "Evaluasi Model":
 
-    st.subheader("Evaluasi Model")
+    st.subheader("Perbandingan Evaluasi Model Before dan After Tuning")
 
     if not METRICS_PATH.exists():
 
@@ -1589,53 +1589,158 @@ elif page == "Evaluasi Model":
             ) as file:
                 metrics = json.load(file)
 
-            col1, col2, col3, col4 = st.columns(4)
+            # Mendukung beberapa penamaan kunci agar pembacaan metrik
+            # tetap kompatibel dengan variasi struktur metrics.json.
+            def ambil_bagian(data, pilihan):
+                for nama in pilihan:
+                    nilai = data.get(nama)
+                    if isinstance(nilai, dict):
+                        return nilai
+                return None
 
-            col1.metric(
-                "MAE",
-                f"{metrics['MAE']:.3f}",
+            before = ambil_bagian(
+                metrics,
+                ["before", "before_tuning", "baseline", "sebelum_tuning"],
+            )
+            after = ambil_bagian(
+                metrics,
+                ["after", "after_tuning", "tuned", "sesudah_tuning"],
             )
 
-            col2.metric(
-                "MSE",
-                f"{metrics['MSE']:.3f}",
-            )
+            # Beberapa format menyimpan hasil perbandingan dalam
+            # satu objek "comparison".
+            if before is None or after is None:
+                comparison = metrics.get("comparison", {})
+                if isinstance(comparison, dict):
+                    before = before or ambil_bagian(
+                        comparison,
+                        ["before", "before_tuning", "baseline"],
+                    )
+                    after = after or ambil_bagian(
+                        comparison,
+                        ["after", "after_tuning", "tuned"],
+                    )
 
-            col3.metric(
-                "RMSE",
-                f"{metrics['RMSE']:.3f}",
-            )
+            nama_metrik = {
+                "MAE": "MAE",
+                "MSE": "MSE",
+                "RMSE": "RMSE",
+                "R2": "R²",
+            }
 
-            col4.metric(
-                "R²",
-                f"{metrics['R2']:.3f}",
-            )
+            def normalisasi_metrik(bagian):
+                if not isinstance(bagian, dict):
+                    return None
 
-            if "jumlah_data" in metrics:
-                st.write(
-                    "Jumlah data:",
-                    metrics["jumlah_data"],
+                hasil = {}
+                for kunci in nama_metrik:
+                    nilai = bagian.get(kunci)
+                    if nilai is None and kunci == "R2":
+                        nilai = bagian.get("R²")
+                    if nilai is not None:
+                        hasil[kunci] = float(nilai)
+                return hasil
+
+            before_values = normalisasi_metrik(before)
+            after_values = normalisasi_metrik(after)
+
+            if before_values and after_values:
+                st.markdown("### Perbandingan hasil sebelum dan sesudah tuning")
+
+                tabel_perbandingan = pd.DataFrame(
+                    [
+                        {
+                            "Metrik": nama_metrik[k],
+                            "Before Tuning": before_values.get(k),
+                            "After Tuning": after_values.get(k),
+                        }
+                        for k in nama_metrik
+                        if k in before_values or k in after_values
+                    ]
                 )
 
-            if "jumlah_data_latih" in metrics:
-                st.write(
-                    "Data pelatihan:",
-                    metrics["jumlah_data_latih"],
+                st.dataframe(
+                    tabel_perbandingan,
+                    use_container_width=True,
+                    hide_index=True,
                 )
 
-            if "jumlah_data_uji" in metrics:
-                st.write(
-                    "Data pengujian:",
-                    metrics["jumlah_data_uji"],
+                st.markdown("### Ringkasan metrik model setelah tuning")
+
+                col1, col2, col3, col4 = st.columns(4)
+                nilai_after = after_values
+
+                for kolom, kunci, label in [
+                    (col1, "MAE", "MAE"),
+                    (col2, "MSE", "MSE"),
+                    (col3, "RMSE", "RMSE"),
+                    (col4, "R2", "R²"),
+                ]:
+                    if kunci in nilai_after:
+                        kolom.metric(label, f"{nilai_after[kunci]:.3f}")
+                    else:
+                        kolom.metric(label, "Tidak tersedia")
+
+                st.caption(
+                    "MAE, MSE, dan RMSE yang lebih rendah menunjukkan "
+                    "kesalahan prediksi yang lebih kecil. Nilai R² yang "
+                    "lebih tinggi menunjukkan kemampuan penjelasan variasi "
+                    "target yang lebih baik. Perbandingan ini didasarkan "
+                    "pada hasil evaluasi yang tersimpan dari proses training."
                 )
+
+            else:
+                # Kompatibilitas untuk metrics.json versi lama yang
+                # hanya menyimpan satu set metrik pada tingkat teratas.
+                st.info(
+                    "File metrik belum memuat pasangan hasil before dan after "
+                    "tuning. Metrik tunggal yang tersedia ditampilkan di bawah."
+                )
+
+                col1, col2, col3, col4 = st.columns(4)
+
+                col1.metric("MAE", f"{metrics['MAE']:.3f}")
+                col2.metric("MSE", f"{metrics['MSE']:.3f}")
+                col3.metric("RMSE", f"{metrics['RMSE']:.3f}")
+                col4.metric("R²", f"{metrics['R2']:.3f}")
+
+            # Informasi jumlah data tetap ditampilkan bila tersedia.
+            jumlah_data = metrics.get("jumlah_data")
+            jumlah_latih = metrics.get("jumlah_data_latih")
+            jumlah_uji = metrics.get("jumlah_data_uji")
+
+            if any(v is not None for v in [jumlah_data, jumlah_latih, jumlah_uji]):
+                st.markdown("### Informasi pembagian dataset")
+                info_cols = st.columns(3)
+
+                if jumlah_data is not None:
+                    info_cols[0].metric("Jumlah data", jumlah_data)
+                if jumlah_latih is not None:
+                    info_cols[1].metric("Data pelatihan", jumlah_latih)
+                if jumlah_uji is not None:
+                    info_cols[2].metric("Data pengujian", jumlah_uji)
+
+            # Menampilkan parameter terbaik apabila dicatat oleh training.
+            best_params = (
+                metrics.get("best_params")
+                or metrics.get("best_parameters")
+                or metrics.get("parameter_terbaik")
+            )
+            if isinstance(best_params, dict) and best_params:
+                st.markdown("### Hyperparameter terbaik hasil GridSearchCV")
+                st.json(best_params)
 
             st.caption(
-                "Metrik berasal dari evaluasi pada saat training. "
-                "Nilai R² negatif menunjukkan model pada data uji "
-                "lebih buruk dibandingkan baseline prediksi rata-rata "
-                "target data uji."
+                "Evaluasi pada data pengujian digunakan untuk membandingkan "
+                "model sebelum dan sesudah tuning. Data pengujian tidak "
+                "digunakan dalam proses pencarian hyperparameter."
             )
 
+        except KeyError as exc:
+            st.error(
+                "Struktur metrics.json belum sesuai. "
+                f"Kunci metrik yang diperlukan tidak ditemukan: {exc}"
+            )
         except Exception as exc:
             st.error(
                 f"Metrik evaluasi gagal dibaca: {exc}"
