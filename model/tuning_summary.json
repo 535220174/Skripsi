@@ -1,0 +1,37 @@
+{
+    "method": "GridSearchCV",
+    "cv": "KFold(n_splits=3, shuffle=True, random_state=42)",
+    "scoring": "neg_mean_absolute_error",
+    "parameter_grid": {
+        "n_estimators": [
+            100,
+            200
+        ],
+        "max_depth": [
+            2,
+            3
+        ],
+        "learning_rate": [
+            0.03,
+            0.05
+        ],
+        "subsample": [
+            0.8,
+            1.0
+        ],
+        "colsample_bytree": [
+            0.8,
+            1.0
+        ]
+    },
+    "best_params": {
+        "colsample_bytree": 1.0,
+        "learning_rate": 0.05,
+        "max_depth": 2,
+        "n_estimators": 100,
+        "subsample": 0.8
+    },
+    "best_cv_mae": 7.15430922542058,
+    "combinations_tested": 32,
+    "fit_count": 96
+}
