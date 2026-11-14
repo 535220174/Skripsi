@@ -9,6 +9,8 @@ import streamlit as st
 import matplotlib.pyplot as plt
 import matplotlib.dates as mdates
 from xgboost import XGBRegressor
+from sklearn.model_selection import train_test_split, GridSearchCV
+from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
 
 
 # ============================================================
@@ -553,6 +555,199 @@ def preprocess_data(df):
 
     return df, jumlah_duplikat, jumlah_invalid
 
+def hitung_metrik(y_true, y_pred):
+    return {
+        "MAE": float(mean_absolute_error(y_true, y_pred)),
+        "MSE": float(mean_squared_error(y_true, y_pred)),
+        "RMSE": float(np.sqrt(mean_squared_error(y_true, y_pred))),
+        "R2": float(r2_score(y_true, y_pred)),
+    }
+
+
+def latih_model_dari_dataset(df):
+    df = df.copy()
+
+    # Fitur waktu
+    tanggal = pd.to_datetime(df["Tanggal"], errors="coerce")
+
+    df["Waktu Menit"] = pd.to_numeric(
+        df["Waktu"],
+        errors="coerce"
+    )
+
+    df["Hari dalam minggu"] = tanggal.dt.dayofweek
+    df["Hari dalam bulan"] = tanggal.dt.day
+    df["Bulan"] = tanggal.dt.month
+
+    # One-hot encoding rute
+    df["Rute/Koridor"] = (
+        df["Rute/Koridor"]
+        .astype(str)
+        .str.strip()
+    )
+
+    route_categories = sorted(
+        df["Rute/Koridor"].dropna().unique().tolist()
+    )
+
+    for route in route_categories:
+        df[f"Rute__{route}"] = (
+            df["Rute/Koridor"] == route
+        ).astype(int)
+
+    feature_columns = [
+        "Waktu Menit",
+        "Hari dalam minggu",
+        "Hari dalam bulan",
+        "Bulan",
+    ]
+
+    feature_columns += [
+        f"Rute__{route}"
+        for route in route_categories
+    ]
+
+    df = df.dropna(
+        subset=feature_columns + ["Jumlah Penumpang"]
+    )
+
+    X = df[feature_columns].astype(float)
+    y = df["Jumlah Penumpang"].astype(float)
+
+    if len(df) < 5:
+        raise ValueError(
+            "Dataset minimal membutuhkan 5 baris data untuk pelatihan model."
+        )
+
+    test_size = max(
+        1,
+        int(round(len(df) * 0.2))
+    )
+
+    if test_size >= len(df):
+        test_size = 1
+
+    X_train, X_test, y_train, y_test = train_test_split(
+        X,
+        y,
+        test_size=test_size,
+        random_state=42,
+    )
+
+    # ==========================
+    # BEFORE TUNING
+    # ==========================
+
+    model_before = XGBRegressor(
+        objective="reg:squarederror",
+        random_state=42,
+        n_estimators=100,
+        max_depth=6,
+        learning_rate=0.1,
+    )
+
+    model_before.fit(
+        X_train,
+        y_train,
+    )
+
+    pred_before = model_before.predict(X_test)
+
+    metrics_before = hitung_metrik(
+        y_test,
+        pred_before,
+    )
+
+    # ==========================
+    # AFTER TUNING
+    # ==========================
+
+    parameter_grid = {
+        "n_estimators": [50, 100],
+        "max_depth": [3, 5],
+        "learning_rate": [0.05, 0.1],
+        "subsample": [0.8, 1.0],
+        "colsample_bytree": [0.8, 1.0],
+    }
+
+    model_tuning = XGBRegressor(
+        objective="reg:squarederror",
+        random_state=42,
+    )
+
+    grid_search = GridSearchCV(
+        estimator=model_tuning,
+        param_grid=parameter_grid,
+        scoring="neg_mean_absolute_error",
+        cv=3 if len(X_train) >= 6 else 2,
+        n_jobs=-1,
+    )
+
+    grid_search.fit(
+        X_train,
+        y_train,
+    )
+
+    model_after = grid_search.best_estimator_
+
+    pred_after = model_after.predict(X_test)
+
+    metrics_after = hitung_metrik(
+        y_test,
+        pred_after,
+    )
+
+    # ==========================
+    # SIMPAN MODEL
+    # ==========================
+
+    MODEL_DIR.mkdir(
+        parents=True,
+        exist_ok=True,
+    )
+
+    model_after.save_model(
+        str(MODEL_PATH)
+    )
+
+    metadata = {
+        "feature_columns": feature_columns,
+        "route_categories": route_categories,
+    }
+
+    joblib.dump(
+        metadata,
+        METADATA_PATH,
+    )
+
+    # ==========================
+    # SIMPAN METRICS
+    # ==========================
+
+    metrics = {
+        "hasil_sebelum_tuning": metrics_before,
+        "hasil_sesudah_tuning": metrics_after,
+
+        "best_params": grid_search.best_params_,
+
+        "jumlah_data": int(len(df)),
+        "jumlah_data_latih": int(len(X_train)),
+        "jumlah_data_uji": int(len(X_test)),
+        "jumlah_tanggal": int(df["Tanggal"].nunique()),
+    }
+
+    with open(
+        METRICS_PATH,
+        "w",
+        encoding="utf-8",
+    ) as file:
+        json.dump(
+            metrics,
+            file,
+            indent=4,
+        )
+
+    return metrics
 
 def klasifikasi_periode(menit):
     if 420 <= menit <= 570:
@@ -996,13 +1191,41 @@ elif page == "Prapemrosesan":
                     proses.write("Tahap 2/3: membersihkan data duplikat dan tidak valid.")
                     progress.progress(60, text="Pembersihan data selesai")
 
-                    proses.write("Tahap 3/3: menyaring data pada jam sibuk pagi dan sore.")
+                    proses.write(
+                        "Tahap 3/4: menyaring data pada jam sibuk pagi dan sore."
+                    )
+
                     clean = clean[
                         clean["Waktu"].between(420, 570)
                         | clean["Waktu"].between(960, 1140)
                     ].copy()
-                    progress.progress(100, text="Prapemrosesan selesai")
-                    proses.update(label="Prapemrosesan berhasil", state="complete", expanded=False)
+
+                    progress.progress(
+                        75,
+                        text="Prapemrosesan selesai"
+                    )
+
+                    if clean.empty:
+                        raise ValueError(
+                            "Tidak ada data pada rentang jam sibuk."
+                        )
+
+                    proses.write(
+                        "Tahap 4/4: melatih ulang model menggunakan dataset terbaru."
+                    )
+
+                    latih_model_dari_dataset(clean)
+
+                    progress.progress(
+                        100,
+                        text="Model dan evaluasi berhasil diperbarui"
+                    )
+
+                    proses.update(
+                        label="Prapemrosesan dan pelatihan model berhasil",
+                        state="complete",
+                        expanded=False,
+                    )
 
                 if clean.empty:
                     st.warning("Tidak ada data pada rentang jam sibuk. Periksa format kolom Waktu dan rentang waktu pengamatan.")
@@ -1011,7 +1234,9 @@ elif page == "Prapemrosesan":
                 st.session_state.predictions = None
                 st.session_state.rekomendasi_operasional = None
 
-                st.success("Prapemrosesan selesai.")
+                st.success(
+                    "Prapemrosesan selesai dan model berhasil dilatih ulang menggunakan dataset terbaru."
+                )
 
                 col1, col2, col3 = st.columns(3)
 
@@ -1702,11 +1927,24 @@ elif page == "Evaluasi Model":
 
             before = ambil_bagian(
                 metrics,
-                ["before", "before_tuning", "baseline", "sebelum_tuning"],
+                [
+                    "before",
+                    "before_tuning",
+                    "baseline",
+                    "sebelum_tuning",
+                    "hasil_sebelum_tuning",
+                ],
             )
+
             after = ambil_bagian(
                 metrics,
-                ["after", "after_tuning", "tuned", "sesudah_tuning"],
+                [
+                    "after",
+                    "after_tuning",
+                    "tuned",
+                    "sesudah_tuning",
+                    "hasil_sesudah_tuning",
+                ],
             )
 
             # Beberapa format menyimpan hasil perbandingan dalam
