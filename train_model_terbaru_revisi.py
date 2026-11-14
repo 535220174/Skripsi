@@ -554,34 +554,59 @@ def main():
         "jumlah_tanggal_unik": int(rush["Tanggal"].nunique()),
         "jumlah_data_latih": int(len(X_train)),
         "jumlah_data_uji": int(len(X_test)),
+
+        # Metrik utama model setelah tuning
         "MAE": metrics_after["MAE"],
         "MSE": metrics_after["MSE"],
         "RMSE": metrics_after["RMSE"],
         "R2": metrics_after["R2"],
+
         "evaluasi_tersedia": True,
         "metode_evaluasi": "train_test_split 80:20, random_state=42",
         "metode_tuning": "GridSearchCV dengan 3-Fold KFold acak",
         "scoring_tuning": "neg_mean_absolute_error",
-        "jumlah_kombinasi_parameter": int(len(grid_search.cv_results_["params"])),
+
+        "jumlah_kombinasi_parameter": int(
+            len(grid_search.cv_results_["params"])
+        ),
+
         "jumlah_fit_cross_validation": int(
             len(grid_search.cv_results_["params"]) * 3
         ),
+
         "best_params": {
-            key: (float(value) if isinstance(value, np.floating) else int(value)
-                  if isinstance(value, np.integer) else value)
+            key: (
+                float(value)
+                if isinstance(value, np.floating)
+                else int(value)
+                if isinstance(value, np.integer)
+                else value
+            )
             for key, value in best_params.items()
         },
+
         "best_cv_mae": float(-grid_search.best_score_),
-        "hasil_sebelum_tuning": metrics_before,
-        "hasil_sesudah_tuning": metrics_after,
+
+        # HASIL PERBANDINGAN
+        "before_tuning": metrics_before,
+        "after_tuning": metrics_after,
+
         "metode_penyeimbangan": (
             "Adaptasi SMOTE untuk regresi kontinu; hanya pada bagian "
             "pelatihan, termasuk pelatihan di setiap fold"
         ),
-        "sampel_sintetis_smote_regression_data_latih_penuh": int(synthetic_count),
-        "jumlah_data_latih_setelah_smote": int(len(X_train_smote)),
+
+        "sampel_sintetis_smote_regression_data_latih_penuh": int(
+            synthetic_count
+        ),
+
+        "jumlah_data_latih_setelah_smote": int(
+            len(X_train_smote)
+        ),
+
         "fitur": FEATURE_COLUMNS,
         "target": TARGET_COLUMN,
+
         "catatan": (
             "Data uji 20% tidak digunakan dalam GridSearchCV atau SMOTE. "
             "GridSearchCV menggunakan KFold acak 3-fold pada data latih 80%. "
@@ -589,7 +614,6 @@ def main():
             "prediksi untuk tanggal baru harus ditafsirkan secara hati-hati."
         ),
     }
-
     # Simpan seluruh hasil pencarian agar kombinasi parameter dapat
     # diperiksa dan didokumentasikan pada lampiran skripsi.
     tuning_results = pd.DataFrame(grid_search.cv_results_)

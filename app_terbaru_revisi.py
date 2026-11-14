@@ -457,6 +457,33 @@ def baca_dataset(file):
     raise ValueError("Format file tidak didukung.")
 
 
+def baca_beberapa_dataset(files):
+    """
+    Membaca beberapa file CSV/Excel dan menggabungkannya
+    menjadi satu dataset.
+    """
+    daftar_data = []
+
+    for file in files:
+        df = baca_dataset(file)
+
+        # Tambahkan nama file sebagai informasi sumber data
+        df["Sumber Dataset"] = file.name
+
+        daftar_data.append(df)
+
+    if not daftar_data:
+        raise ValueError("Tidak ada dataset yang dipilih.")
+
+    # Menggabungkan seluruh dataset secara vertikal
+    gabungan = pd.concat(
+        daftar_data,
+        ignore_index=True
+    )
+
+    return gabungan
+
+
 def preprocess_data(df):
     df = df.copy()
 
@@ -581,24 +608,24 @@ def bentuk_fitur_prediksi(result, metadata):
 def buat_titik_prediksi(tanggal_mulai, waktu_pilihan):
     rows = []
 
-    for hari in range(7):
-        tanggal = (
-            pd.Timestamp(tanggal_mulai)
-            + pd.Timedelta(days=hari)
-        )
+    tanggal = pd.Timestamp(tanggal_mulai)
 
-        for waktu in waktu_pilihan:
-            jam, menit = map(int, waktu.split(":"))
-            menit_harian = jam * 60 + menit
+    # Prediksi hanya untuk satu tanggal yang dipilih
+    if tanggal.weekday() >= 5:
+        return pd.DataFrame()
 
-            for rute in ["Koridor 2", "Rute 2A"]:
-                rows.append({
-                    "Tanggal": tanggal,
-                    "Waktu": waktu,
-                    "Waktu (menit)": menit_harian,
-                    "Periode": klasifikasi_periode(menit_harian),
-                    "Rute/Koridor": rute,
-                })
+    for waktu in waktu_pilihan:
+        jam, menit = map(int, waktu.split(":"))
+        menit_harian = jam * 60 + menit
+
+        for rute in ["Koridor 2", "Rute 2A"]:
+            rows.append({
+                "Tanggal": tanggal,
+                "Waktu": waktu,
+                "Waktu (menit)": menit_harian,
+                "Periode": klasifikasi_periode(menit_harian),
+                "Rute/Koridor": rute,
+            })
 
     return pd.DataFrame(rows)
 
@@ -803,51 +830,114 @@ elif page == "Unggah Dataset":
     st.subheader("Unggah Dataset Pengamatan")
 
     uploaded = st.file_uploader(
-        "Pilih file CSV atau Excel",
+        "Pilih satu atau beberapa file CSV/Excel",
         type=["csv", "xlsx", "xls"],
+        accept_multiple_files=True,
         key="file_dataset_pengamatan",
     )
 
-    if uploaded is not None:
+    if uploaded:
         try:
-            progress = st.progress(0, text="Menyiapkan proses unggah dataset...")
+            progress = st.progress(
+                0,
+                text="Menyiapkan proses unggah dataset..."
+            )
 
-            with st.status("Unggah dataset sedang diproses", expanded=True) as proses:
-                proses.write("Tahap 1/3: membaca file CSV atau Excel.")
-                raw = baca_dataset(uploaded)
-                progress.progress(40, text="File berhasil dibaca")
+            with st.status(
+                "Unggah dataset sedang diproses",
+                expanded=True
+            ) as proses:
 
-                proses.write("Tahap 2/3: memeriksa struktur dan kolom dataset.")
+                proses.write(
+                    f"Tahap 1/4: membaca {len(uploaded)} file dataset."
+                )
+
+                raw = baca_beberapa_dataset(uploaded)
+
+                progress.progress(
+                    30,
+                    text="Seluruh file berhasil dibaca"
+                )
+
+                proses.write(
+                    "Tahap 2/4: memeriksa struktur dan kolom dataset."
+                )
+
                 missing = [
                     column
                     for column in REQUIRED_COLUMNS
                     if column not in raw.columns
                 ]
-                progress.progress(75, text="Pemeriksaan struktur dataset selesai")
 
-                proses.write("Tahap 3/3: menyimpan dataset ke dalam sesi aplikasi.")
+                progress.progress(
+                    55,
+                    text="Pemeriksaan struktur dataset selesai"
+                )
+
+                proses.write(
+                    "Tahap 3/4: menggabungkan seluruh dataset."
+                )
+
+                # Kolom sumber dataset tidak digunakan sebagai fitur model,
+                # sehingga hanya menjadi informasi asal data.
+                jumlah_baris = len(raw)
+                jumlah_dataset = len(uploaded)
+
+                progress.progress(
+                    80,
+                    text="Dataset berhasil digabungkan"
+                )
+
+                proses.write(
+                    "Tahap 4/4: menyimpan dataset ke dalam sesi aplikasi."
+                )
+
                 st.session_state.dataset = raw
                 st.session_state.processed = None
                 st.session_state.predictions = None
                 st.session_state.rekomendasi_operasional = None
-                progress.progress(100, text="Proses unggah selesai")
+
+                progress.progress(
+                    100,
+                    text="Proses unggah selesai"
+                )
 
                 if missing:
                     proses.update(
-                        label="Dataset terbaca, tetapi kolom wajib belum lengkap",
+                        label=(
+                            "Dataset terbaca, tetapi kolom wajib belum lengkap"
+                        ),
                         state="complete",
                         expanded=False,
                     )
                 else:
                     proses.update(
-                        label="Dataset berhasil dibaca dan divalidasi",
+                        label=(
+                            f"{jumlah_dataset} dataset berhasil digabungkan"
+                        ),
                         state="complete",
                         expanded=False,
                     )
 
-            st.success("Dataset berhasil dibaca.")
-            st.write("Jumlah baris:", len(raw))
-            st.write("Jumlah kolom:", len(raw.columns))
+            st.success(
+                f"{jumlah_dataset} file berhasil digabungkan "
+                f"dengan total {jumlah_baris} baris."
+            )
+
+            st.write(
+                "Jumlah dataset:",
+                jumlah_dataset
+            )
+
+            st.write(
+                "Jumlah baris setelah digabungkan:",
+                len(raw)
+            )
+
+            st.write(
+                "Jumlah kolom:",
+                len(raw.columns)
+            )
 
             if missing:
                 st.error(
@@ -855,7 +945,9 @@ elif page == "Unggah Dataset":
                     + ", ".join(missing)
                 )
             else:
-                st.success("Semua kolom wajib ditemukan.")
+                st.success(
+                    "Semua kolom wajib ditemukan."
+                )
 
             st.dataframe(
                 raw,
@@ -864,7 +956,9 @@ elif page == "Unggah Dataset":
             )
 
         except Exception as exc:
-            st.error(f"Dataset gagal dibaca: {exc}")
+            st.error(
+                f"Dataset gagal dibaca atau digabungkan: {exc}"
+            )
 
     if st.session_state.dataset is not None:
         st.markdown("### Pratinjau dataset")
@@ -1001,6 +1095,14 @@ elif page == "Prediksi":
             "Tanggal awal prediksi",
             value=pd.Timestamp.today().date(),
         )
+
+        tanggal_mulai_ts = pd.Timestamp(tanggal_mulai)
+
+        if tanggal_mulai_ts.weekday() >= 5:
+            st.warning(
+                "Tanggal awal prediksi harus merupakan hari kerja (Senin–Jumat). "
+                "Silakan pilih tanggal lain."
+            )
 
         semua_waktu = [
             "07:00",
@@ -1727,8 +1829,37 @@ elif page == "Evaluasi Model":
                 or metrics.get("parameter_terbaik")
             )
             if isinstance(best_params, dict) and best_params:
-                st.markdown("### Hyperparameter terbaik hasil GridSearchCV")
-                st.json(best_params)
+                st.subheader("Hyperparameter terbaik hasil GridSearchCV")
+
+                if best_params:
+                    hyperparameter_labels = {
+                        "colsample_bytree": "Colsample bytree",
+                        "learning_rate": "Learning rate",
+                        "max_depth": "Max depth",
+                        "n_estimators": "N estimators",
+                        "subsample": "Subsample",
+                    }
+
+                    hyperparameter_data = []
+
+                    for parameter, value in best_params.items():
+                        hyperparameter_data.append({
+                            "Hyperparameter": hyperparameter_labels.get(
+                                parameter,
+                                parameter.replace("_", " ").title()
+                            ),
+                            "Nilai": value
+                        })
+
+                    df_hyperparameter = pd.DataFrame(hyperparameter_data)
+
+                    st.dataframe(
+                        df_hyperparameter,
+                        use_container_width=True,
+                        hide_index=True,
+                    )
+                else:
+                    st.info("Hyperparameter terbaik belum tersedia.")
 
             st.caption(
                 "Evaluasi pada data pengujian digunakan untuk membandingkan "
