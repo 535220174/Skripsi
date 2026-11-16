@@ -1899,218 +1899,433 @@ elif page == "Evaluasi Model":
 
     st.subheader("Perbandingan Evaluasi Model Before dan After Tuning")
 
-    if not METRICS_PATH.exists():
+    st.write(
+        "Halaman ini menampilkan perbandingan kinerja model sebelum dan "
+        "sesudah dilakukan tuning hyperparameter menggunakan GridSearchCV."
+    )
+
+    st.info(
+        "Hasil evaluasi dihitung berdasarkan dataset yang telah melalui "
+        "proses prapemrosesan. Jika dataset diperbarui, jalankan kembali "
+        "evaluasi agar nilai before dan after tuning mengikuti dataset terbaru."
+    )
+
+    # ========================================================
+    # TOMBOL MEMPERBARUI HASIL EVALUASI
+    # ========================================================
+
+    if st.session_state.processed is None:
 
         st.warning(
-            "File metrik belum ditemukan. Jalankan skrip training "
-            "terlebih dahulu."
+            "Dataset belum diproses. Silakan buka halaman "
+            "'Prapemrosesan' dan jalankan proses dataset terlebih dahulu."
         )
 
     else:
 
-        try:
-            with open(
-                METRICS_PATH,
-                "r",
-                encoding="utf-8",
-            ) as file:
-                metrics = json.load(file)
+        st.markdown("### Perbarui hasil evaluasi")
 
-            # Mendukung beberapa penamaan kunci agar pembacaan metrik
-            # tetap kompatibel dengan variasi struktur metrics.json.
-            def ambil_bagian(data, pilihan):
-                for nama in pilihan:
-                    nilai = data.get(nama)
-                    if isinstance(nilai, dict):
-                        return nilai
-                return None
+        st.write(
+            "Proses ini akan menjalankan kembali model sebelum tuning dan "
+            "GridSearchCV untuk memperoleh model terbaik berdasarkan dataset "
+            "yang sedang digunakan."
+        )
 
-            before = ambil_bagian(
-                metrics,
-                [
-                    "before",
-                    "before_tuning",
-                    "baseline",
-                    "sebelum_tuning",
-                    "hasil_sebelum_tuning",
-                ],
-            )
+        if st.button(
+            "Jalankan Evaluasi Before & After Tuning",
+            type="primary",
+        ):
 
-            after = ambil_bagian(
-                metrics,
-                [
-                    "after",
-                    "after_tuning",
-                    "tuned",
-                    "sesudah_tuning",
-                    "hasil_sesudah_tuning",
-                ],
-            )
+            try:
 
-            # Beberapa format menyimpan hasil perbandingan dalam
-            # satu objek "comparison".
-            if before is None or after is None:
-                comparison = metrics.get("comparison", {})
-                if isinstance(comparison, dict):
-                    before = before or ambil_bagian(
-                        comparison,
-                        ["before", "before_tuning", "baseline"],
-                    )
-                    after = after or ambil_bagian(
-                        comparison,
-                        ["after", "after_tuning", "tuned"],
+                progress = st.progress(
+                    0,
+                    text="Menyiapkan evaluasi model..."
+                )
+
+                with st.status(
+                    "Evaluasi model sedang berjalan",
+                    expanded=True,
+                ) as proses:
+
+                    proses.write(
+                        "Tahap 1/4: mengambil dataset hasil prapemrosesan."
                     )
 
-            nama_metrik = {
-                "MAE": "MAE",
-                "MSE": "MSE",
-                "RMSE": "RMSE",
-                "R2": "R²",
-            }
+                    dataset_evaluasi = st.session_state.processed.copy()
 
-            def normalisasi_metrik(bagian):
-                if not isinstance(bagian, dict):
-                    return None
+                    progress.progress(
+                        20,
+                        text="Dataset evaluasi berhasil disiapkan"
+                    )
 
-                hasil = {}
-                for kunci in nama_metrik:
-                    nilai = bagian.get(kunci)
-                    if nilai is None and kunci == "R2":
-                        nilai = bagian.get("R²")
-                    if nilai is not None:
-                        hasil[kunci] = float(nilai)
-                return hasil
+                    proses.write(
+                        "Tahap 2/4: melatih model sebelum tuning."
+                    )
 
-            before_values = normalisasi_metrik(before)
-            after_values = normalisasi_metrik(after)
+                    progress.progress(
+                        40,
+                        text="Model Before Tuning sedang dilatih"
+                    )
 
-            if before_values and after_values:
-                st.markdown("### Perbandingan hasil sebelum dan sesudah tuning")
+                    proses.write(
+                        "Tahap 3/4: menjalankan GridSearchCV untuk mencari "
+                        "hyperparameter terbaik."
+                    )
 
-                tabel_perbandingan = pd.DataFrame(
+                    progress.progress(
+                        65,
+                        text="Proses GridSearchCV sedang berjalan"
+                    )
+
+                    hasil_evaluasi = latih_model_dari_dataset(
+                        dataset_evaluasi
+                    )
+
+                    progress.progress(
+                        90,
+                        text="Metrik Before dan After Tuning berhasil dihitung"
+                    )
+
+                    proses.write(
+                        "Tahap 4/4: menyimpan hasil evaluasi dan parameter terbaik."
+                    )
+
+                    progress.progress(
+                        100,
+                        text="Evaluasi model selesai"
+                    )
+
+                    proses.update(
+                        label="Evaluasi Before dan After Tuning berhasil diperbarui",
+                        state="complete",
+                        expanded=False,
+                    )
+
+                st.success(
+                    "Evaluasi model berhasil diperbarui menggunakan dataset terbaru."
+                )
+
+            except Exception as exc:
+
+                tampilkan_status_gagal(
+                    "Evaluasi model gagal dijalankan",
+                    exc,
                     [
-                        {
-                            "Metrik": nama_metrik[k],
-                            "Before Tuning": before_values.get(k),
-                            "After Tuning": after_values.get(k),
-                        }
-                        for k in nama_metrik
-                        if k in before_values or k in after_values
-                    ]
+                        "Pastikan dataset telah melalui proses prapemrosesan.",
+                        "Pastikan jumlah data mencukupi untuk proses GridSearchCV.",
+                        "Periksa kembali format kolom dataset yang digunakan."
+                    ],
                 )
 
-                st.dataframe(
-                    tabel_perbandingan,
-                    use_container_width=True,
-                    hide_index=True,
+        # ====================================================
+        # MEMBACA METRICS.JSON TERBARU
+        # ====================================================
+
+        if METRICS_PATH.exists():
+
+            try:
+
+                with open(
+                    METRICS_PATH,
+                    "r",
+                    encoding="utf-8",
+                ) as file:
+
+                    metrics = json.load(file)
+
+                hasil_sebelum = metrics.get(
+                    "hasil_sebelum_tuning"
                 )
 
-                st.markdown("### Ringkasan metrik model setelah tuning")
-
-                col1, col2, col3, col4 = st.columns(4)
-                nilai_after = after_values
-
-                for kolom, kunci, label in [
-                    (col1, "MAE", "MAE"),
-                    (col2, "MSE", "MSE"),
-                    (col3, "RMSE", "RMSE"),
-                    (col4, "R2", "R²"),
-                ]:
-                    if kunci in nilai_after:
-                        kolom.metric(label, f"{nilai_after[kunci]:.3f}")
-                    else:
-                        kolom.metric(label, "Tidak tersedia")
-
-                st.caption(
-                    "MAE, MSE, dan RMSE yang lebih rendah menunjukkan "
-                    "kesalahan prediksi yang lebih kecil. Nilai R² yang "
-                    "lebih tinggi menunjukkan kemampuan penjelasan variasi "
-                    "target yang lebih baik. Perbandingan ini didasarkan "
-                    "pada hasil evaluasi yang tersimpan dari proses training."
+                hasil_sesudah = metrics.get(
+                    "hasil_sesudah_tuning"
                 )
 
-            else:
-                # Kompatibilitas untuk metrics.json versi lama yang
-                # hanya menyimpan satu set metrik pada tingkat teratas.
-                st.info(
-                    "File metrik belum memuat pasangan hasil before dan after "
-                    "tuning. Metrik tunggal yang tersedia ditampilkan di bawah."
+                best_params = metrics.get(
+                    "best_params",
+                    {}
                 )
 
-                col1, col2, col3, col4 = st.columns(4)
+                # =================================================
+                # VALIDASI HASIL BEFORE DAN AFTER
+                # =================================================
 
-                col1.metric("MAE", f"{metrics['MAE']:.3f}")
-                col2.metric("MSE", f"{metrics['MSE']:.3f}")
-                col3.metric("RMSE", f"{metrics['RMSE']:.3f}")
-                col4.metric("R²", f"{metrics['R2']:.3f}")
+                if (
+                    isinstance(hasil_sebelum, dict)
+                    and isinstance(hasil_sesudah, dict)
+                ):
 
-            # Informasi jumlah data tetap ditampilkan bila tersedia.
-            jumlah_data = metrics.get("jumlah_data")
-            jumlah_latih = metrics.get("jumlah_data_latih")
-            jumlah_uji = metrics.get("jumlah_data_uji")
+                    st.markdown(
+                        "### Perbandingan hasil Before dan After Tuning"
+                    )
 
-            if any(v is not None for v in [jumlah_data, jumlah_latih, jumlah_uji]):
-                st.markdown("### Informasi pembagian dataset")
-                info_cols = st.columns(3)
-
-                if jumlah_data is not None:
-                    info_cols[0].metric("Jumlah data", jumlah_data)
-                if jumlah_latih is not None:
-                    info_cols[1].metric("Data pelatihan", jumlah_latih)
-                if jumlah_uji is not None:
-                    info_cols[2].metric("Data pengujian", jumlah_uji)
-
-            # Menampilkan parameter terbaik apabila dicatat oleh training.
-            best_params = (
-                metrics.get("best_params")
-                or metrics.get("best_parameters")
-                or metrics.get("parameter_terbaik")
-            )
-            if isinstance(best_params, dict) and best_params:
-                st.subheader("Hyperparameter terbaik hasil GridSearchCV")
-
-                if best_params:
-                    hyperparameter_labels = {
-                        "colsample_bytree": "Colsample bytree",
-                        "learning_rate": "Learning rate",
-                        "max_depth": "Max depth",
-                        "n_estimators": "N estimators",
-                        "subsample": "Subsample",
-                    }
-
-                    hyperparameter_data = []
-
-                    for parameter, value in best_params.items():
-                        hyperparameter_data.append({
-                            "Hyperparameter": hyperparameter_labels.get(
-                                parameter,
-                                parameter.replace("_", " ").title()
-                            ),
-                            "Nilai": value
-                        })
-
-                    df_hyperparameter = pd.DataFrame(hyperparameter_data)
+                    tabel_perbandingan = pd.DataFrame(
+                        [
+                            {
+                                "Metrik": "MAE",
+                                "Before Tuning": hasil_sebelum.get(
+                                    "MAE"
+                                ),
+                                "After Tuning": hasil_sesudah.get(
+                                    "MAE"
+                                ),
+                            },
+                            {
+                                "Metrik": "MSE",
+                                "Before Tuning": hasil_sebelum.get(
+                                    "MSE"
+                                ),
+                                "After Tuning": hasil_sesudah.get(
+                                    "MSE"
+                                ),
+                            },
+                            {
+                                "Metrik": "RMSE",
+                                "Before Tuning": hasil_sebelum.get(
+                                    "RMSE"
+                                ),
+                                "After Tuning": hasil_sesudah.get(
+                                    "RMSE"
+                                ),
+                            },
+                            {
+                                "Metrik": "R²",
+                                "Before Tuning": hasil_sebelum.get(
+                                    "R2"
+                                ),
+                                "After Tuning": hasil_sesudah.get(
+                                    "R2"
+                                ),
+                            },
+                        ]
+                    )
 
                     st.dataframe(
-                        df_hyperparameter,
+                        tabel_perbandingan.style.format(
+                            {
+                                "Before Tuning": "{:.3f}",
+                                "After Tuning": "{:.3f}",
+                            }
+                        ),
                         use_container_width=True,
                         hide_index=True,
                     )
+
+                    # =================================================
+                    # HASIL AFTER TUNING
+                    # =================================================
+
+                    st.markdown(
+                        "### Hasil Model Setelah Tuning"
+                    )
+
+                    col1, col2, col3, col4 = st.columns(4)
+
+                    col1.metric(
+                        "MAE After Tuning",
+                        f"{hasil_sesudah['MAE']:.3f}"
+                    )
+
+                    col2.metric(
+                        "MSE After Tuning",
+                        f"{hasil_sesudah['MSE']:.3f}"
+                    )
+
+                    col3.metric(
+                        "RMSE After Tuning",
+                        f"{hasil_sesudah['RMSE']:.3f}"
+                    )
+
+                    col4.metric(
+                        "R² After Tuning",
+                        f"{hasil_sesudah['R2']:.3f}"
+                    )
+
+                    # =================================================
+                    # PERUBAHAN NILAI
+                    # =================================================
+
+                    st.markdown(
+                        "### Perubahan kinerja setelah tuning"
+                    )
+
+                    perubahan_mae = (
+                        hasil_sebelum["MAE"]
+                        - hasil_sesudah["MAE"]
+                    )
+
+                    perubahan_mse = (
+                        hasil_sebelum["MSE"]
+                        - hasil_sesudah["MSE"]
+                    )
+
+                    perubahan_rmse = (
+                        hasil_sebelum["RMSE"]
+                        - hasil_sesudah["RMSE"]
+                    )
+
+                    perubahan_r2 = (
+                        hasil_sesudah["R2"]
+                        - hasil_sebelum["R2"]
+                    )
+
+                    col1, col2, col3, col4 = st.columns(4)
+
+                    col1.metric(
+                        "Perubahan MAE",
+                        f"{perubahan_mae:+.3f}"
+                    )
+
+                    col2.metric(
+                        "Perubahan MSE",
+                        f"{perubahan_mse:+.3f}"
+                    )
+
+                    col3.metric(
+                        "Perubahan RMSE",
+                        f"{perubahan_rmse:+.3f}"
+                    )
+
+                    col4.metric(
+                        "Perubahan R²",
+                        f"{perubahan_r2:+.3f}"
+                    )
+
+                    # =================================================
+                    # PARAMETER TERBAIK
+                    # =================================================
+
+                    if isinstance(best_params, dict) and best_params:
+
+                        st.markdown(
+                            "### Hyperparameter terbaik hasil GridSearchCV"
+                        )
+
+                        hyperparameter_labels = {
+                            "n_estimators": "N estimators",
+                            "max_depth": "Max depth",
+                            "learning_rate": "Learning rate",
+                            "subsample": "Subsample",
+                            "colsample_bytree": "Colsample bytree",
+                        }
+
+                        data_hyperparameter = []
+
+                        for parameter, nilai in best_params.items():
+
+                            data_hyperparameter.append(
+                                {
+                                    "Hyperparameter":
+                                        hyperparameter_labels.get(
+                                            parameter,
+                                            parameter
+                                        ),
+                                    "Nilai": nilai,
+                                }
+                            )
+
+                        df_hyperparameter = pd.DataFrame(
+                            data_hyperparameter
+                        )
+
+                        st.dataframe(
+                            df_hyperparameter,
+                            use_container_width=True,
+                            hide_index=True,
+                        )
+
+                    # =================================================
+                    # INFORMASI DATA
+                    # =================================================
+
+                    st.markdown(
+                        "### Informasi pembagian dataset"
+                    )
+
+                    info1, info2, info3, info4 = st.columns(4)
+
+                    info1.metric(
+                        "Jumlah data",
+                        metrics.get(
+                            "jumlah_data",
+                            "-"
+                        )
+                    )
+
+                    info2.metric(
+                        "Data pelatihan",
+                        metrics.get(
+                            "jumlah_data_latih",
+                            "-"
+                        )
+                    )
+
+                    info3.metric(
+                        "Data pengujian",
+                        metrics.get(
+                            "jumlah_data_uji",
+                            "-"
+                        )
+                    )
+
+                    info4.metric(
+                        "Tanggal unik",
+                        metrics.get(
+                            "jumlah_tanggal",
+                            "-"
+                        )
+                    )
+
+                    # =================================================
+                    # INTERPRETASI
+                    # =================================================
+
+                    st.markdown(
+                        "### Interpretasi hasil evaluasi"
+                    )
+
+                    st.write(
+                        "Nilai MAE, MSE, dan RMSE digunakan untuk melihat "
+                        "besarnya kesalahan prediksi, sehingga nilai yang "
+                        "lebih rendah menunjukkan kesalahan prediksi yang "
+                        "lebih kecil. Nilai R² digunakan untuk melihat "
+                        "kemampuan model dalam menjelaskan variasi jumlah "
+                        "penumpang, sehingga nilai yang lebih tinggi "
+                        "menunjukkan kinerja yang lebih baik."
+                    )
+
+                    st.caption(
+                        "Nilai Before Tuning berasal dari model XGBoost "
+                        "dengan parameter awal, sedangkan nilai After "
+                        "Tuning berasal dari model dengan kombinasi "
+                        "hyperparameter terbaik yang diperoleh melalui "
+                        "GridSearchCV."
+                    )
+
                 else:
-                    st.info("Hyperparameter terbaik belum tersedia.")
 
-            st.caption(
-                "Evaluasi pada data pengujian digunakan untuk membandingkan "
-                "model sebelum dan sesudah tuning. Data pengujian tidak "
-                "digunakan dalam proses pencarian hyperparameter."
-            )
+                    st.warning(
+                        "Hasil Before dan After Tuning belum tersedia. "
+                        "Klik tombol 'Jalankan Evaluasi Before & After Tuning' "
+                        "untuk menghitung ulang."
+                    )
 
-        except KeyError as exc:
-            st.error(
-                "Struktur metrics.json belum sesuai. "
-                f"Kunci metrik yang diperlukan tidak ditemukan: {exc}"
-            )
-        except Exception as exc:
-            st.error(
-                f"Metrik evaluasi gagal dibaca: {exc}"
+            except Exception as exc:
+
+                tampilkan_status_gagal(
+                    "Metrik evaluasi gagal dibaca",
+                    exc,
+                    [
+                        "Jalankan kembali evaluasi Before dan After Tuning.",
+                        "Pastikan file metrics.json dapat dibaca.",
+                        "Pastikan proses prapemrosesan telah berhasil."
+                    ],
+                )
+
+        else:
+
+            st.warning(
+                "File metrics.json belum tersedia. "
+                "Jalankan evaluasi Before dan After Tuning terlebih dahulu."
             )
