@@ -895,6 +895,20 @@ def latih_model_dari_dataset(df):
         # Nama lama dipertahankan agar bagian tampilan aplikasi tetap kompatibel.
         "hasil_sebelum_tuning": metrics_before,
         "hasil_sesudah_tuning": metrics_after,
+
+        "hasil_prediksi_uji": {
+            "aktual": np.asarray(
+                y_test, dtype=float
+            ).tolist(),
+
+            "prediksi_sebelum_tuning": np.asarray(
+                pred_before, dtype=float
+            ).tolist(),
+
+            "prediksi_sesudah_tuning": np.asarray(
+                pred_after, dtype=float
+            ).tolist(),
+        },
         # Nama kunci disamakan dengan output train_model.py.
         "before_tuning": metrics_before,
         "after_tuning": metrics_after,
@@ -2050,6 +2064,72 @@ elif page == "Rekomendasi Layanan":
                 hide_index=True,
             )
 
+
+            # =========================================
+            # GRAFIK REKOMENDASI KEBUTUHAN ARMADA
+            # =========================================
+
+            st.markdown(
+                "### Grafik Estimasi Kebutuhan Armada"
+            )
+
+            grafik_armada = pd.DataFrame({
+                "Komponen": [
+                    "Bus Tersedia",
+                    "Kebutuhan berdasarkan Headway",
+                    "Kebutuhan berdasarkan Prediksi",
+                    "Estimasi Kebutuhan Armada",
+                ],
+
+                "Jumlah Bus": [
+                    rekomendasi["Bus Tersedia"],
+
+                    rekomendasi[
+                        "Kebutuhan Armada berdasarkan Headway"
+                    ],
+
+                    rekomendasi[
+                        "Kebutuhan Armada berdasarkan Prediksi"
+                    ],
+
+                    rekomendasi[
+                        "Estimasi Kebutuhan Armada"
+                    ],
+                ],
+            })
+
+            fig, ax = plt.subplots(
+                figsize=(10, 5)
+            )
+
+            bars = ax.barh(
+                grafik_armada["Komponen"],
+                grafik_armada["Jumlah Bus"],
+            )
+
+            ax.set_title(
+                "Perbandingan Ketersediaan dan Kebutuhan Armada"
+            )
+
+            ax.set_xlabel("Jumlah Bus")
+            ax.set_ylabel("Komponen")
+            ax.grid(axis="x", alpha=0.3)
+
+            for bar in bars:
+
+                nilai = bar.get_width()
+
+                ax.text(
+                    nilai + 0.05,
+                    bar.get_y() + bar.get_height() / 2,
+                    f"{int(nilai)} bus",
+                    va="center",
+                )
+
+            fig.tight_layout()
+            st.pyplot(fig)
+            plt.close(fig)
+
             st.download_button(
                 "Unduh hasil rekomendasi operasional",
                 data=tabel_rekomendasi.to_csv(
@@ -2325,6 +2405,116 @@ elif page == "Evaluasi Model":
                         hide_index=True,
                     )
 
+
+                    # =========================================
+                    # GRAFIK AKTUAL VS PREDIKSI
+                    # =========================================
+
+                    hasil_prediksi_uji = metrics.get(
+                        "hasil_prediksi_uji"
+                    )
+
+                    if hasil_prediksi_uji:
+
+                        aktual = np.asarray(
+                            hasil_prediksi_uji["aktual"],
+                            dtype=float
+                        )
+
+                        pred_before = np.asarray(
+                            hasil_prediksi_uji[
+                                "prediksi_sebelum_tuning"
+                            ],
+                            dtype=float
+                        )
+
+                        pred_after = np.asarray(
+                            hasil_prediksi_uji[
+                                "prediksi_sesudah_tuning"
+                            ],
+                            dtype=float
+                        )
+
+                        if (
+                            len(aktual) > 0
+                            and len(aktual) == len(pred_before)
+                            and len(aktual) == len(pred_after)
+                        ):
+
+                            st.markdown(
+                                "### Grafik Aktual dan Prediksi"
+                            )
+
+                            fig, ax = plt.subplots(
+                                figsize=(9, 6)
+                            )
+
+                            ax.scatter(
+                                aktual,
+                                pred_before,
+                                label="Sebelum Tuning",
+                                alpha=0.7,
+                            )
+
+                            ax.scatter(
+                                aktual,
+                                pred_after,
+                                label="Sesudah Tuning",
+                                alpha=0.7,
+                            )
+
+                            batas_min = min(
+                                aktual.min(),
+                                pred_before.min(),
+                                pred_after.min(),
+                            )
+
+                            batas_max = max(
+                                aktual.max(),
+                                pred_before.max(),
+                                pred_after.max(),
+                            )
+
+                            if batas_min == batas_max:
+                                batas_max = batas_min + 1
+
+                            ax.plot(
+                                [batas_min, batas_max],
+                                [batas_min, batas_max],
+                                linestyle="--",
+                                label="Prediksi Ideal",
+                            )
+
+                            ax.set_title(
+                                "Perbandingan Aktual dan Prediksi XGBoost"
+                            )
+
+                            ax.set_xlabel(
+                                "Jumlah Penumpang Aktual"
+                            )
+
+                            ax.set_ylabel(
+                                "Jumlah Penumpang Prediksi"
+                            )
+
+                            ax.legend()
+                            ax.grid(alpha=0.3)
+
+                            fig.tight_layout()
+                            st.pyplot(fig)
+                            plt.close(fig)
+
+                        else:
+                            st.warning(
+                                "Data aktual dan prediksi tidak sesuai."
+                            )
+
+                    else:
+                        st.warning(
+                            "Data prediksi pengujian belum tersedia. "
+                            "Jalankan evaluasi kembali."
+                        )
+
                     # =================================================
                     # HASIL AFTER TUNING
                     # =================================================
@@ -2354,6 +2544,111 @@ elif page == "Evaluasi Model":
                         "R² After Tuning",
                         f"{hasil_sesudah['R2']:.3f}"
                     )
+
+
+                    # =========================================
+                    # GRAFIK PERBANDINGAN MAE, MSE, RMSE
+                    # =========================================
+
+                    st.markdown(
+                        "### Grafik Perbandingan Metrik Error"
+                    )
+
+                    nama_metrik = [
+                        ("MAE", "MAE"),
+                        ("MSE", "MSE"),
+                        ("RMSE", "RMSE"),
+                    ]
+
+                    fig, axes = plt.subplots(
+                        1, 3,
+                        figsize=(14, 4)
+                    )
+
+                    for ax, (nama, key) in zip(
+                        axes, nama_metrik
+                    ):
+
+                        nilai_before = hasil_sebelum[key]
+                        nilai_after = hasil_sesudah[key]
+
+                        ax.bar(
+                            ["Before", "After"],
+                            [nilai_before, nilai_after],
+                        )
+
+                        ax.set_title(nama)
+                        ax.set_ylabel("Nilai")
+                        ax.grid(
+                            axis="y",
+                            alpha=0.3
+                        )
+
+                        for posisi, nilai in enumerate(
+                            [nilai_before, nilai_after]
+                        ):
+                            ax.text(
+                                posisi,
+                                nilai,
+                                f"{nilai:.3f}",
+                                ha="center",
+                                va="bottom",
+                            )
+
+                    fig.suptitle(
+                        "Perbandingan MAE, MSE, dan RMSE"
+                    )
+
+                    fig.tight_layout()
+                    st.pyplot(fig)
+                    plt.close(fig)
+
+                    # =========================================
+                    # GRAFIK PERBANDINGAN R-SQUARED
+                    # =========================================
+
+                    st.markdown(
+                        "### Grafik Perbandingan R²"
+                    )
+
+                    nilai_r2 = [
+                        hasil_sebelum["R2"],
+                        hasil_sesudah["R2"],
+                    ]
+
+                    fig, ax = plt.subplots(
+                        figsize=(7, 4)
+                    )
+
+                    ax.bar(
+                        ["Before Tuning", "After Tuning"],
+                        nilai_r2,
+                    )
+
+                    ax.axhline(
+                        y=0,
+                        linestyle="--",
+                    )
+
+                    ax.set_title(
+                        "Perbandingan R² Model XGBoost"
+                    )
+
+                    ax.set_ylabel("Nilai R²")
+                    ax.grid(axis="y", alpha=0.3)
+
+                    for posisi, nilai in enumerate(nilai_r2):
+                        ax.annotate(
+                            f"{nilai:.4f}",
+                            (posisi, nilai),
+                            xytext=(0, 5 if nilai >= 0 else -15),
+                            textcoords="offset points",
+                            ha="center",
+                        )
+
+                    fig.tight_layout()
+                    st.pyplot(fig)
+                    plt.close(fig)
 
                     # =================================================
                     # PERUBAHAN NILAI
