@@ -9,7 +9,8 @@ import streamlit as st
 import matplotlib.pyplot as plt
 import matplotlib.dates as mdates
 from xgboost import XGBRegressor
-from sklearn.model_selection import train_test_split, GridSearchCV
+from sklearn.base import BaseEstimator, RegressorMixin
+from sklearn.model_selection import train_test_split, GridSearchCV, KFold
 from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
 
 
@@ -488,6 +489,7 @@ def baca_beberapa_dataset(files):
 
 def preprocess_data(df):
     df = df.copy()
+    df.columns = [str(column).strip() for column in df.columns]
 
     missing = [
         column
@@ -501,12 +503,19 @@ def preprocess_data(df):
             + ", ".join(missing)
         )
 
+    # Menghapus duplikat sebelum konversi tipe data.
+    jumlah_awal = len(df)
+    df = df.drop_duplicates().copy()
+    jumlah_duplikat = jumlah_awal - len(df)
+
+    # Mengubah tanggal ke format datetime.
     df["Tanggal"] = pd.to_datetime(
         df["Tanggal"],
         dayfirst=True,
         errors="coerce",
-    )
+    ).dt.normalize()
 
+    # Mengubah waktu menjadi jumlah menit.
     waktu_asli = df["Waktu"].astype(str).str.strip()
 
     waktu_parsed = pd.to_datetime(
@@ -526,22 +535,30 @@ def preprocess_data(df):
         + waktu_parsed.dt.minute
     )
 
+    # Membersihkan dan mengubah jumlah penumpang menjadi numerik.
+    passenger_text = (
+        df["Jumlah Penumpang"]
+        .astype("string")
+        .str.strip()
+        .str.replace(",", "", regex=False)
+    )
+
     df["Jumlah Penumpang"] = pd.to_numeric(
-        df["Jumlah Penumpang"],
+        passenger_text,
         errors="coerce",
     )
 
-    jumlah_awal = len(df)
-
-    df = df.drop_duplicates()
-
-    jumlah_duplikat = jumlah_awal - len(df)
-
+    # Memeriksa data yang tidak valid.
     invalid = (
         df["Tanggal"].isna()
         | df["Waktu"].isna()
         | df["Jumlah Penumpang"].isna()
         | (df["Jumlah Penumpang"] < 0)
+        | (
+            df["Jumlah Penumpang"]
+            != np.floor(df["Jumlah Penumpang"])
+        )
+        | df["Rute/Koridor"].isna()
     )
 
     jumlah_invalid = int(invalid.sum())
@@ -550,202 +567,394 @@ def preprocess_data(df):
 
     df["Waktu"] = df["Waktu"].astype(int)
     df["Jumlah Penumpang"] = (
-        df["Jumlah Penumpang"].astype(float)
+        df["Jumlah Penumpang"].astype(int)
     )
 
+    # Hanya menggunakan data hari kerja, Senin sampai Jumat.
+    df = df.loc[
+        df["Tanggal"].dt.dayofweek < 5
+    ].copy()
+
     return df, jumlah_duplikat, jumlah_invalid
+
+NUMERIC_FEATURES = ["Waktu Menit", "Hari dalam minggu", "Hari dalam bulan", "Bulan"]
+TARGET_COLUMN = "Jumlah Penumpang"
+ROUTE_PREFIX = "Rute__"
+
+
+def normalize_route(value):
+    text = str(value).strip()
+    # Menjaga nama kategori tetap konsisten antara training dan aplikasi.
+    aliases = {
+        "koridor 2": "Koridor 2",
+        "rute 2a": "Rute 2A",
+    }
+    return aliases.get(text.casefold(), text)
+
+
+def build_features(df, route_categories):
+    """Membentuk fitur tanggal, waktu, dan rute dengan kolom konsisten."""
+    work = df.copy()
+    dates = pd.to_datetime(work["Tanggal"], errors="coerce")
+    work["Waktu Menit"] = pd.to_numeric(work["Waktu Menit"], errors="coerce")
+    work["Hari dalam minggu"] = dates.dt.dayofweek
+    work["Hari dalam bulan"] = dates.dt.day
+    work["Bulan"] = dates.dt.month
+    route_values = work["Rute/Koridor"].map(normalize_route)
+    for route in route_categories:
+        work[f"{ROUTE_PREFIX}{route}"] = (route_values == route).astype(int)
+    feature_columns = NUMERIC_FEATURES + [f"{ROUTE_PREFIX}{r}" for r in route_categories]
+    return work.reindex(columns=feature_columns, fill_value=0).astype(float), feature_columns
+
+
+def create_model(params=None):
+    """Membuat model XGBoost dengan parameter default atau hasil tuning."""
+    model_params = {
+        "n_estimators": 100,
+        "max_depth": 2,
+        "learning_rate": 0.05,
+        "subsample": 0.9,
+        "colsample_bytree": 1.0,
+        "reg_lambda": 1.0,
+    }
+    if params:
+        model_params.update(params)
+
+    return XGBRegressor(
+        objective="reg:squarederror",
+        random_state=42,
+        n_jobs=1,
+        **model_params,
+    )
+
+
+def smote_regression(X_train, y_train, random_state=42):
+    """
+    Adaptasi SMOTE untuk target regresi kontinu.
+
+    Nilai target dibagi ke dalam bin kuantil hanya untuk mendeteksi
+    rentang target yang jarang. Sampel sintetis dibuat melalui interpolasi
+    antara dua sampel pada rentang target yang jarang. Data uji tidak pernah
+    diteruskan ke fungsi ini.
+
+    Catatan: ini bukan SMOTE klasifikasi standar; metode harus dijelaskan
+    sebagai adaptasi SMOTE untuk regresi dalam laporan metodologi.
+    """
+    X = np.asarray(X_train, dtype=float)
+    y = np.asarray(y_train, dtype=float).reshape(-1)
+
+    if len(y) < 10 or len(np.unique(y)) < 3:
+        return X_train.copy(), y_train.copy(), 0
+
+    # Bin dengan lebar rentang target yang sama dipakai untuk mendeteksi
+    # rentang nilai penumpang yang jarang; qcut dihindari karena cenderung
+    # membuat jumlah sampel tiap bin hampir sama.
+    try:
+        bins = pd.cut(y, bins=min(5, len(np.unique(y))), labels=False, duplicates="drop")
+    except ValueError:
+        return X_train.copy(), y_train.copy(), 0
+
+    bin_counts = pd.Series(bins).value_counts().sort_index()
+    if len(bin_counts) < 2:
+        return X_train.copy(), y_train.copy(), 0
+
+    typical_count = int(bin_counts.median())
+    rare_bins = set(bin_counts[bin_counts < typical_count * 0.75].index.tolist())
+    rare_indices = np.array([i for i, b in enumerate(bins) if b in rare_bins], dtype=int)
+
+    if len(rare_indices) < 2:
+        return X_train.copy(), y_train.copy(), 0
+
+    rng = np.random.default_rng(random_state)
+    synthetic_X, synthetic_y = [], []
+    # Tambah sampel secukupnya untuk mendekatkan jumlah sampel di rentang
+    # target jarang ke jumlah tipikal, tanpa menyentuh data pengujian.
+    for bin_id in sorted(rare_bins):
+        members = np.array([i for i, b in enumerate(bins) if b == bin_id], dtype=int)
+        if len(members) < 2:
+            continue
+        target_count = min(typical_count, len(members) * 2)
+        needed = max(0, target_count - len(members))
+        for _ in range(needed):
+            i = int(rng.choice(members))
+            candidates = members[members != i]
+            if len(candidates) == 0:
+                continue
+            # Tetangga dipilih berdasarkan jarak pada fitur dan target yang
+            # dinormalisasi sederhana agar target kontinu ikut diperhitungkan.
+            x_scale = np.std(X[members], axis=0)
+            x_scale[x_scale == 0] = 1.0
+            y_scale = np.std(y[members]) or 1.0
+            distances = np.sqrt(
+                np.sum(((X[candidates] - X[i]) / x_scale) ** 2, axis=1)
+                + ((y[candidates] - y[i]) / y_scale) ** 2
+            )
+            j = int(candidates[np.argmin(distances)])
+            lam = float(rng.random())
+            synthetic_X.append(X[i] + lam * (X[j] - X[i]))
+            synthetic_y.append(y[i] + lam * (y[j] - y[i]))
+
+    if not synthetic_y:
+        return X_train.copy(), y_train.copy(), 0
+
+    X_aug = np.vstack([X, np.asarray(synthetic_X)])
+    y_aug = np.concatenate([y, np.asarray(synthetic_y)])
+    return pd.DataFrame(X_aug, columns=X_train.columns), pd.Series(y_aug), len(synthetic_y)
+
+
+class SmoteXGBRegressor(RegressorMixin, BaseEstimator):
+    """
+    Estimator XGBoost yang menerapkan adaptasi SMOTE Regression hanya
+    pada data yang diterima oleh fit(). Saat dipakai GridSearchCV,
+    data tersebut adalah bagian pelatihan dari masing-masing fold.
+    """
+
+    def __init__(
+        self,
+        n_estimators=100,
+        max_depth=2,
+        learning_rate=0.05,
+        subsample=0.9,
+        colsample_bytree=1.0,
+        reg_lambda=1.0,
+    ):
+        self.n_estimators = n_estimators
+        self.max_depth = max_depth
+        self.learning_rate = learning_rate
+        self.subsample = subsample
+        self.colsample_bytree = colsample_bytree
+        self.reg_lambda = reg_lambda
+
+    def fit(self, X, y):
+        X_resampled, y_resampled, synthetic_count = smote_regression(
+            X, y, random_state=42
+        )
+        self.synthetic_count_ = int(synthetic_count)
+
+        self.model_ = XGBRegressor(
+            objective="reg:squarederror",
+            n_estimators=self.n_estimators,
+            max_depth=self.max_depth,
+            learning_rate=self.learning_rate,
+            subsample=self.subsample,
+            colsample_bytree=self.colsample_bytree,
+            reg_lambda=self.reg_lambda,
+            random_state=42,
+            n_jobs=1,
+        )
+        self.model_.fit(X_resampled, y_resampled)
+        return self
+
+    def predict(self, X):
+        return self.model_.predict(X)
+
+
 
 def hitung_metrik(y_true, y_pred):
     return {
         "MAE": float(mean_absolute_error(y_true, y_pred)),
         "MSE": float(mean_squared_error(y_true, y_pred)),
         "RMSE": float(np.sqrt(mean_squared_error(y_true, y_pred))),
-        "R2": float(r2_score(y_true, y_pred)),
+        "R2": (
+            float(r2_score(y_true, y_pred))
+            if len(y_true) >= 2 else None
+        ),
     }
 
 
 def latih_model_dari_dataset(df):
+    """Evaluasi aplikasi yang diselaraskan dengan train_model.py."""
     df = df.copy()
 
-    # Fitur waktu
-    tanggal = pd.to_datetime(df["Tanggal"], errors="coerce")
+    required = ["Tanggal", "Waktu", "Rute/Koridor", "Jumlah Penumpang"]
+    missing = [column for column in required if column not in df.columns]
+    if missing:
+        raise ValueError("Kolom evaluasi tidak lengkap: " + ", ".join(missing))
 
-    df["Waktu Menit"] = pd.to_numeric(
-        df["Waktu"],
-        errors="coerce"
-    )
+    # Dataset aplikasi menyimpan Waktu dalam menit setelah prapemrosesan.
+    df["Tanggal"] = pd.to_datetime(df["Tanggal"], errors="coerce")
+    if "Waktu Menit" in df.columns:
+        df["Waktu Menit"] = pd.to_numeric(df["Waktu Menit"], errors="coerce")
+    else:
+        df["Waktu Menit"] = pd.to_numeric(df["Waktu"], errors="coerce")
 
-    df["Hari dalam minggu"] = tanggal.dt.dayofweek
-    df["Hari dalam bulan"] = tanggal.dt.day
-    df["Bulan"] = tanggal.dt.month
-
-    # One-hot encoding rute
-    df["Rute/Koridor"] = (
-        df["Rute/Koridor"]
-        .astype(str)
+    passenger_text = (
+        df["Jumlah Penumpang"]
+        .astype("string")
         .str.strip()
+        .str.replace(",", "", regex=False)
     )
+    df["Jumlah Penumpang"] = pd.to_numeric(passenger_text, errors="coerce")
 
-    route_categories = sorted(
-        df["Rute/Koridor"].dropna().unique().tolist()
+    valid = (
+        df["Tanggal"].notna()
+        & df["Waktu Menit"].notna()
+        & df["Jumlah Penumpang"].notna()
+        & (df["Jumlah Penumpang"] >= 0)
+        & (df["Jumlah Penumpang"] == np.floor(df["Jumlah Penumpang"]))
+        & df["Rute/Koridor"].notna()
     )
-
-    for route in route_categories:
-        df[f"Rute__{route}"] = (
-            df["Rute/Koridor"] == route
-        ).astype(int)
-
-    feature_columns = [
-        "Waktu Menit",
-        "Hari dalam minggu",
-        "Hari dalam bulan",
-        "Bulan",
-    ]
-
-    feature_columns += [
-        f"Rute__{route}"
-        for route in route_categories
-    ]
-
-    df = df.dropna(
-        subset=feature_columns + ["Jumlah Penumpang"]
-    )
-
-    X = df[feature_columns].astype(float)
-    y = df["Jumlah Penumpang"].astype(float)
-
+    df = df.loc[valid].copy()
     if len(df) < 5:
-        raise ValueError(
-            "Dataset minimal membutuhkan 5 baris data untuk pelatihan model."
-        )
+        raise ValueError("Dataset evaluasi minimal membutuhkan 5 baris valid.")
 
-    test_size = max(
-        1,
-        int(round(len(df) * 0.2))
-    )
+    df["Waktu Menit"] = df["Waktu Menit"].astype(int)
+    df["Jumlah Penumpang"] = df["Jumlah Penumpang"].astype(int)
+    df["Rute/Koridor"] = df["Rute/Koridor"].map(normalize_route)
 
-    if test_size >= len(df):
-        test_size = 1
+    route_categories = sorted(df["Rute/Koridor"].dropna().unique().tolist())
+    if not route_categories:
+        raise ValueError("Tidak ditemukan kategori Rute/Koridor yang valid.")
 
+    X, feature_columns = build_features(df, route_categories)
+    y = df[TARGET_COLUMN].astype(float)
+
+    # Pembagian data harus identik dengan skrip training: 80:20, seed 42.
     X_train, X_test, y_train, y_test = train_test_split(
         X,
         y,
-        test_size=test_size,
+        test_size=0.2,
         random_state=42,
     )
+    if len(X_train) < 3:
+        raise ValueError(
+            "Data latih kurang dari 3 baris sehingga 3-Fold Cross-Validation tidak dapat dijalankan."
+        )
 
-    # ==========================
-    # BEFORE TUNING
-    # ==========================
-
-    model_before = XGBRegressor(
-        objective="reg:squarederror",
-        random_state=42,
-        n_estimators=100,
-        max_depth=6,
-        learning_rate=0.1,
+    # BEFORE TUNING: SMOTE Regression hanya diterapkan pada data latih.
+    X_train_smote, y_train_smote, synthetic_count = smote_regression(
+        X_train, y_train, random_state=42
     )
+    model_before = create_model()
+    model_before.fit(X_train_smote, y_train_smote)
+    pred_before = np.maximum(model_before.predict(X_test), 0)
+    metrics_before = hitung_metrik(y_test, pred_before)
 
-    model_before.fit(
-        X_train,
-        y_train,
-    )
-
-    pred_before = model_before.predict(X_test)
-
-    metrics_before = hitung_metrik(
-        y_test,
-        pred_before,
-    )
-
-    # ==========================
-    # AFTER TUNING
-    # ==========================
-
+    # AFTER TUNING: konfigurasi dibuat sama persis dengan train_model.py.
     parameter_grid = {
-        "n_estimators": [50, 100],
-        "max_depth": [3, 5],
-        "learning_rate": [0.05, 0.1],
+        "n_estimators": [100, 200],
+        "max_depth": [2, 3],
+        "learning_rate": [0.03, 0.05],
         "subsample": [0.8, 1.0],
         "colsample_bytree": [0.8, 1.0],
     }
-
-    model_tuning = XGBRegressor(
-        objective="reg:squarederror",
+    cross_validation = KFold(
+        n_splits=3,
+        shuffle=True,
         random_state=42,
     )
-
     grid_search = GridSearchCV(
-        estimator=model_tuning,
+        estimator=SmoteXGBRegressor(),
         param_grid=parameter_grid,
         scoring="neg_mean_absolute_error",
-        cv=3 if len(X_train) >= 6 else 2,
-        n_jobs=-1,
+        cv=cross_validation,
+        refit=True,
+        n_jobs=1,
+        verbose=1,
+        error_score="raise",
+        return_train_score=True,
     )
+    grid_search.fit(X_train, y_train)
 
-    grid_search.fit(
-        X_train,
-        y_train,
+    best_params = grid_search.best_params_
+    tuned_model = grid_search.best_estimator_
+    pred_after = np.maximum(tuned_model.predict(X_test), 0)
+    metrics_after = hitung_metrik(y_test, pred_after)
+
+    # Model produksi dilatih ulang pada seluruh data setelah evaluasi selesai.
+    X_full_smote, y_full_smote, final_synthetic_count = smote_regression(
+        X, y, random_state=42
     )
+    final_model = create_model(best_params)
+    final_model.fit(X_full_smote, y_full_smote)
 
-    model_after = grid_search.best_estimator_
-
-    pred_after = model_after.predict(X_test)
-
-    metrics_after = hitung_metrik(
-        y_test,
-        pred_after,
-    )
-
-    # ==========================
-    # SIMPAN MODEL
-    # ==========================
-
-    MODEL_DIR.mkdir(
-        parents=True,
-        exist_ok=True,
-    )
-
-    model_after.save_model(
-        str(MODEL_PATH)
-    )
+    MODEL_DIR.mkdir(parents=True, exist_ok=True)
+    final_model.save_model(str(MODEL_PATH))
 
     metadata = {
         "feature_columns": feature_columns,
+        "numeric_features": NUMERIC_FEATURES,
         "route_categories": route_categories,
+        "target_column": TARGET_COLUMN,
+        "morning_range": "07:00-09:30",
+        "evening_range": "16:00-19:00",
+        "location": "Halte Pulo Gadung",
+        "services": ["Koridor 2", "Rute 2A"],
+        "best_params": {
+            key: (float(value) if isinstance(value, np.floating)
+                  else int(value) if isinstance(value, np.integer) else value)
+            for key, value in best_params.items()
+        },
+        "tuning_method": "GridSearchCV dengan 3-Fold KFold acak",
+        "smote_method": "Adaptasi SMOTE untuk regresi kontinu; hanya pada data latih",
     }
+    joblib.dump(metadata, METADATA_PATH)
 
-    joblib.dump(
-        metadata,
-        METADATA_PATH,
-    )
-
-    # ==========================
-    # SIMPAN METRICS
-    # ==========================
-
+    best_params_json = metadata["best_params"]
     metrics = {
+        # Nama lama dipertahankan agar bagian tampilan aplikasi tetap kompatibel.
         "hasil_sebelum_tuning": metrics_before,
         "hasil_sesudah_tuning": metrics_after,
-
-        "best_params": grid_search.best_params_,
-
+        # Nama kunci disamakan dengan output train_model.py.
+        "before_tuning": metrics_before,
+        "after_tuning": metrics_after,
+        "MAE": metrics_after["MAE"],
+        "MSE": metrics_after["MSE"],
+        "RMSE": metrics_after["RMSE"],
+        "R2": metrics_after["R2"],
+        "evaluasi_tersedia": True,
+        "metode_evaluasi": "train_test_split 80:20, random_state=42",
+        "metode_tuning": "GridSearchCV dengan 3-Fold KFold acak",
+        "scoring_tuning": "neg_mean_absolute_error",
+        "cross_validation": "KFold(n_splits=3, shuffle=True, random_state=42)",
+        "cv_folds": 3,
+        "cv_shuffle": True,
+        "random_state_split": 42,
+        "random_state_cv": 42,
+        "random_state_smote": 42,
+        "random_state_model": 42,
+        "n_jobs": 1,
+        "baseline_params": {
+            "n_estimators": 100,
+            "max_depth": 2,
+            "learning_rate": 0.05,
+            "subsample": 0.9,
+            "colsample_bytree": 1.0,
+            "reg_lambda": 1.0,
+        },
+        "parameter_grid": parameter_grid,
+        "jumlah_kombinasi_parameter": int(len(grid_search.cv_results_["params"])),
+        "jumlah_fit_cross_validation": int(len(grid_search.cv_results_["params"]) * 3),
+        "best_params": best_params_json,
+        "best_cv_mae": float(-grid_search.best_score_),
         "jumlah_data": int(len(df)),
         "jumlah_data_latih": int(len(X_train)),
         "jumlah_data_uji": int(len(X_test)),
         "jumlah_tanggal": int(df["Tanggal"].nunique()),
+        "metode_penyeimbangan": (
+            "Adaptasi SMOTE untuk regresi kontinu; hanya pada data latih, "
+            "termasuk data latih pada setiap fold"
+        ),
+        "sampel_sintetis_smote_regression_data_latih": int(synthetic_count),
+        "jumlah_data_latih_setelah_smote": int(len(X_train_smote)),
+        "sampel_sintetis_smote_regression_data_penuh": int(final_synthetic_count),
+        "fitur": feature_columns,
+        "target": TARGET_COLUMN,
+        "catatan": (
+            "Data uji 20% tidak digunakan dalam SMOTE maupun GridSearchCV. "
+            "GridSearchCV menggunakan KFold acak 3-fold pada data latih 80%."
+        ),
     }
 
-    with open(
-        METRICS_PATH,
-        "w",
-        encoding="utf-8",
-    ) as file:
-        json.dump(
-            metrics,
-            file,
-            indent=4,
-        )
+    with open(METRICS_PATH, "w", encoding="utf-8") as file:
+        json.dump(metrics, file, indent=4, ensure_ascii=False)
+
+    # Simpan rincian seluruh kombinasi parameter untuk audit/lampiran.
+    tuning_results = pd.DataFrame(grid_search.cv_results_)
+    tuning_results = tuning_results.sort_values(
+        by="rank_test_score"
+    ).reset_index(drop=True)
+    tuning_results.to_csv(MODEL_DIR / "grid_search_results.csv", index=False)
 
     return metrics
 
@@ -1199,6 +1408,10 @@ elif page == "Prapemrosesan":
                         clean["Waktu"].between(420, 570)
                         | clean["Waktu"].between(960, 1140)
                     ].copy()
+
+                    clean = clean.sort_values(
+                        ["Tanggal", "Waktu"]
+                    ).reset_index(drop=True)
 
                     progress.progress(
                         75,
@@ -2221,19 +2434,41 @@ elif page == "Evaluasi Model":
                                             parameter,
                                             parameter
                                         ),
-                                    "Nilai": nilai,
+                                    "Nilai": str(nilai),
                                 }
                             )
 
-                        df_hyperparameter = pd.DataFrame(
-                            data_hyperparameter
-                        )
+                    # =================================================
+                    # KONFIGURASI EVALUASI
+                    # =================================================
 
-                        st.dataframe(
-                            df_hyperparameter,
-                            use_container_width=True,
-                            hide_index=True,
-                        )
+                    st.markdown("### Konfigurasi proses evaluasi")
+
+                    konfigurasi_evaluasi = [
+                        {"Konfigurasi": "Pembagian data", "Nilai": "Train-test split 80:20"},
+                        {"Konfigurasi": "Random state pembagian data", "Nilai": metrics.get("random_state_split", 42)},
+                        {"Konfigurasi": "SMOTE Regression", "Nilai": "Hanya pada data latih dan training fold"},
+                        {"Konfigurasi": "Random state SMOTE", "Nilai": metrics.get("random_state_smote", 42)},
+                        {"Konfigurasi": "Cross-validation", "Nilai": "KFold 3-Fold"},
+                        {"Konfigurasi": "Shuffle", "Nilai": metrics.get("cv_shuffle", True)},
+                        {"Konfigurasi": "Random state KFold", "Nilai": metrics.get("random_state_cv", 42)},
+                        {"Konfigurasi": "Scoring GridSearchCV", "Nilai": metrics.get("scoring_tuning", "neg_mean_absolute_error")},
+                        {"Konfigurasi": "n_jobs GridSearchCV", "Nilai": metrics.get("n_jobs", 1)},
+                        {"Konfigurasi": "Parameter awal Before Tuning", "Nilai": json.dumps(metrics.get("baseline_params", {}), ensure_ascii=False)},
+                        {"Konfigurasi": "Ruang pencarian GridSearchCV", "Nilai": json.dumps(metrics.get("parameter_grid", {}), ensure_ascii=False)},
+                    ]
+
+                    df_konfigurasi = pd.DataFrame(konfigurasi_evaluasi)
+
+                    df_konfigurasi["Nilai"] = (
+                        df_konfigurasi["Nilai"].astype(str)
+                    )
+
+                    st.dataframe(
+                        df_konfigurasi,
+                        use_container_width=True,
+                        hide_index=True,
+                    )
 
                     # =================================================
                     # INFORMASI DATA

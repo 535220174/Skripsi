@@ -227,6 +227,10 @@ def clean_dataset(df):
         + (df["Waktu Menit"] % 60).astype(str).str.zfill(2)
     )
 
+    # Hanya menggunakan data hari kerja: Senin sampai Jumat.
+    jumlah_akhir_pekan = int((df["Tanggal"].dt.dayofweek >= 5).sum())
+    df = df.loc[df["Tanggal"].dt.dayofweek < 5].copy()
+
     rush = df[df["Periode"].isin(["Pagi", "Sore"])].copy()
     rush = rush.sort_values(["Tanggal", "Waktu Menit"]).reset_index(drop=True)
 
@@ -410,6 +414,10 @@ def main():
     print("=" * 65)
 
     data_path = find_dataset()
+
+    print(f"File dataset terpilih : {data_path.resolve()}")
+    print(f"Ukuran file           : {data_path.stat().st_size} bytes")
+
     df = read_dataset(data_path)
 
     print(f"Dataset       : {data_path}")
@@ -541,6 +549,24 @@ def main():
             if len(y_test) >= 2 else None
         ),
     }
+
+    # Simpan perbandingan nilai aktual dan prediksi pada data uji.
+    hasil_prediksi_uji = rush.loc[X_test.index, [
+        "Tanggal",
+        "Waktu",
+        "Rute/Koridor",
+        "Periode",
+    ]].copy()
+
+    hasil_prediksi_uji["Aktual"] = y_test.to_numpy()
+    hasil_prediksi_uji["Prediksi Before Tuning"] = y_pred_before
+    hasil_prediksi_uji["Prediksi After Tuning"] = y_pred_after
+
+    hasil_prediksi_uji.to_csv(
+        MODEL_DIR / "hasil_prediksi_data_uji.csv",
+        index=False,
+        date_format="%Y-%m-%d",
+    )
 
     # Metrik utama tetap menunjuk ke model setelah tuning agar kompatibel
     # dengan aplikasi yang membaca MAE/MSE/RMSE/R2 pada tingkat teratas.
