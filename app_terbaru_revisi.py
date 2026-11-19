@@ -2733,6 +2733,15 @@ elif page == "Evaluasi Model":
                                 }
                             )
 
+                            if data_hyperparameter:
+                                df_hyperparameter = pd.DataFrame(data_hyperparameter)
+
+                                st.dataframe(
+                                    df_hyperparameter,
+                                    use_container_width=True,
+                                    hide_index=True
+                                )
+
                     # =================================================
                     # KONFIGURASI EVALUASI
                     # =================================================
