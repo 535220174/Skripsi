@@ -1,31 +1,16 @@
 {
-    "dataset": "data_layanan_penumpang_bus_tj_halte_pulo_gadung.xlsx",
-    "jumlah_baris_awal": 258,
-    "duplikat_dihapus": 0,
-    "baris_tidak_valid_dihapus": 0,
-    "baris_valid": 216,
-    "jumlah_data_rush_hour": 205,
-    "jumlah_tanggal_unik": 6,
-    "jumlah_data_latih": 164,
-    "jumlah_data_uji": 41,
-    "MAE": 8.265953436130431,
-    "MSE": 106.60721379406885,
-    "RMSE": 10.325076938893426,
-    "R2": -0.013142809261709854,
-    "evaluasi_tersedia": true,
-    "metode_evaluasi": "train_test_split 80:20, random_state=42",
-    "metode_tuning": "GridSearchCV dengan 3-Fold KFold acak",
-    "scoring_tuning": "neg_mean_absolute_error",
-    "jumlah_kombinasi_parameter": 32,
-    "jumlah_fit_cross_validation": 96,
-    "best_params": {
-        "colsample_bytree": 0.8,
-        "learning_rate": 0.03,
-        "max_depth": 2,
-        "n_estimators": 100,
-        "subsample": 0.8
+    "hasil_sebelum_tuning": {
+        "MAE": 7.960825478158346,
+        "MSE": 100.21102069672136,
+        "RMSE": 10.010545474484463,
+        "R2": 0.04764348101452587
     },
-    "best_cv_mae": 7.031393868888401,
+    "hasil_sesudah_tuning": {
+        "MAE": 8.265953436130431,
+        "MSE": 106.60721379406885,
+        "RMSE": 10.325076938893426,
+        "R2": -0.013142809261709854
+    },
     "before_tuning": {
         "MAE": 7.960825478158346,
         "MSE": 100.21102069672136,
@@ -38,9 +23,70 @@
         "RMSE": 10.325076938893426,
         "R2": -0.013142809261709854
     },
-    "metode_penyeimbangan": "Adaptasi SMOTE untuk regresi kontinu; hanya pada bagian pelatihan, termasuk pelatihan di setiap fold",
-    "sampel_sintetis_smote_regression_data_latih_penuh": 21,
+    "MAE": 8.265953436130431,
+    "MSE": 106.60721379406885,
+    "RMSE": 10.325076938893426,
+    "R2": -0.013142809261709854,
+    "evaluasi_tersedia": true,
+    "metode_evaluasi": "train_test_split 80:20, random_state=42",
+    "metode_tuning": "GridSearchCV dengan 3-Fold KFold acak",
+    "scoring_tuning": "neg_mean_absolute_error",
+    "cross_validation": "KFold(n_splits=3, shuffle=True, random_state=42)",
+    "cv_folds": 3,
+    "cv_shuffle": true,
+    "random_state_split": 42,
+    "random_state_cv": 42,
+    "random_state_smote": 42,
+    "random_state_model": 42,
+    "n_jobs": 1,
+    "baseline_params": {
+        "n_estimators": 100,
+        "max_depth": 2,
+        "learning_rate": 0.05,
+        "subsample": 0.9,
+        "colsample_bytree": 1.0,
+        "reg_lambda": 1.0
+    },
+    "parameter_grid": {
+        "n_estimators": [
+            100,
+            200
+        ],
+        "max_depth": [
+            2,
+            3
+        ],
+        "learning_rate": [
+            0.03,
+            0.05
+        ],
+        "subsample": [
+            0.8,
+            1.0
+        ],
+        "colsample_bytree": [
+            0.8,
+            1.0
+        ]
+    },
+    "jumlah_kombinasi_parameter": 32,
+    "jumlah_fit_cross_validation": 96,
+    "best_params": {
+        "colsample_bytree": 0.8,
+        "learning_rate": 0.03,
+        "max_depth": 2,
+        "n_estimators": 100,
+        "subsample": 0.8
+    },
+    "best_cv_mae": 7.031393868888401,
+    "jumlah_data": 205,
+    "jumlah_data_latih": 164,
+    "jumlah_data_uji": 41,
+    "jumlah_tanggal": 6,
+    "metode_penyeimbangan": "Adaptasi SMOTE untuk regresi kontinu; hanya pada data latih, termasuk data latih pada setiap fold",
+    "sampel_sintetis_smote_regression_data_latih": 21,
     "jumlah_data_latih_setelah_smote": 185,
+    "sampel_sintetis_smote_regression_data_penuh": 26,
     "fitur": [
         "Waktu Menit",
         "Hari dalam minggu",
@@ -50,5 +96,5 @@
         "Rute__Rute 2A"
     ],
     "target": "Jumlah Penumpang",
-    "catatan": "Data uji 20% tidak digunakan dalam GridSearchCV atau SMOTE. GridSearchCV menggunakan KFold acak 3-fold pada data latih 80%. Karena data hanya mencakup lima tanggal, hasil evaluasi dan prediksi untuk tanggal baru harus ditafsirkan secara hati-hati."
+    "catatan": "Data uji 20% tidak digunakan dalam SMOTE maupun GridSearchCV. GridSearchCV menggunakan KFold acak 3-fold pada data latih 80%."
 }
