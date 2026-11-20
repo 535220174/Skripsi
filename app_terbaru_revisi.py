@@ -2340,6 +2340,48 @@ elif page == "Evaluasi Model":
                     {}
                 )
 
+                if isinstance(best_params, dict) and best_params:
+
+                    st.markdown(
+                        "### Hyperparameter terbaik hasil GridSearchCV"
+                    )
+
+                    hyperparameter_labels = {
+                        "n_estimators": "N estimators",
+                        "max_depth": "Max depth",
+                        "learning_rate": "Learning rate",
+                        "subsample": "Subsample",
+                        "colsample_bytree": "Colsample bytree"
+                    }
+
+                    data_hyperparameter = []
+
+                    for parameter, nilai in best_params.items():
+                        data_hyperparameter.append({
+                            "Parameter": hyperparameter_labels.get(
+                                parameter, parameter
+                            ),
+                            "Nilai Terbaik": nilai
+                        })
+
+                    # Membuat DataFrame
+                    df_hyperparameter = pd.DataFrame(
+                        data_hyperparameter
+                    )
+
+                    # Menampilkan tabel
+                    st.dataframe(
+                        df_hyperparameter,
+                        use_container_width=True,
+                        hide_index=True
+                    )
+
+                else:
+                    st.warning(
+                        "Parameter terbaik belum tersedia. "
+                        "Silakan jalankan evaluasi model terlebih dahulu."
+                    )
+
                 # =================================================
                 # VALIDASI HASIL BEFORE DAN AFTER
                 # =================================================
